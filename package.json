@@ -52,7 +52,7 @@
     "lucide-react": "^0.454.0",
     "motion": "^12.23.24",
     "nanoid": "latest",
-    "next": "16.0.0",
+    "next": "16.0.7",
     "next-themes": "^0.4.6",
     "react": "19.2.0",
     "react-day-picker": "9.8.0",
