@@ -9,6 +9,9 @@ const FLY_REGION = process.env.FLY_REGION ?? 'dev';
 /** Active events on this worker instance, keyed by eventId */
 export const events = new Map<string, EventState>();
 
+/** Secondary index: event_code → eventId, for fast viewer joins */
+export const eventsByCode = new Map<string, string>();
+
 /** Maps each WebSocket to its metadata */
 export const clientMeta = new WeakMap<ServerWebSocket<ClientMeta>, ClientMeta>();
 

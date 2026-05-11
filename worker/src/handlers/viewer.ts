@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from 'bun';
 import type { ClientMeta, ViewerUp, WorkerToViewer } from '../types';
-import { events } from '../index';
+import { events, eventsByCode } from '../index';
 
 const PIPELINE_TEARDOWN_GRACE_MS = 30_000;
 
@@ -10,13 +10,8 @@ export async function handleViewerMessage(
 ): Promise<void> {
   switch (msg.type) {
     case 'join': {
-      const state = events.get(
-        [...events.values()].find(e =>
-          // Phase 0 stub: look up event by eventCode via in-memory map
-          // Phase 1+: resolve eventCode → eventId via Supabase
-          e.eventId === msg.eventCode
-        )?.eventId ?? '',
-      );
+      const eventId = eventsByCode.get(msg.eventCode);
+      const state = eventId ? events.get(eventId) : undefined;
 
       if (!state) {
         ws.send(JSON.stringify({ type: 'error', code: 'EVENT_NOT_FOUND', message: 'Event not found or not live' } satisfies WorkerToViewer));

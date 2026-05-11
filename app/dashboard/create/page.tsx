@@ -23,7 +23,7 @@ export default async function CreateEventPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Captions className="h-6 w-6 text-primary" />
-            <span className="font-bold text-xl">LiveCaptions</span>
+            <span className="font-bold text-xl">TODO_BRAND</span>
           </div>
           <Button variant="ghost" asChild>
             <Link href="/dashboard">

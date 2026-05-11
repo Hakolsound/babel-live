@@ -2,7 +2,8 @@
 
 export type BroadcasterUp =
   | { type: 'hello'; eventId: string; sourceLang: string; targetLangs: string[] }
-  | { type: 'audio'; pcm16: ArrayBuffer }  // 16kHz mono PCM, 20ms frames (unused in Option B — Scribe is browser-direct)
+  | { type: 'audio'; pcm16: ArrayBuffer }  // 16kHz mono PCM (unused in Option B — Scribe is browser-direct)
+  | { type: 'transcript'; lang: string; text: string; final: boolean; ts: number }
   | { type: 'update_targets'; targetLangs: string[] }
   | { type: 'pause' }
   | { type: 'resume' }
@@ -38,6 +39,7 @@ export type WorkerToViewer =
 
 export interface EventState {
   eventId: string;
+  eventCode: string | null;  // populated after Supabase lookup on hello
   sourceLang: string;
   targetLangs: string[];
   startedAt: number;

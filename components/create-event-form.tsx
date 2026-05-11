@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { getSupabaseBrowserClient } from "@/lib/supabase/client"
 import { nanoid } from "nanoid"
+import { generateEventCode } from "@/lib/event-code"
 
 interface CreateEventFormProps {
   userId: string
@@ -29,8 +30,8 @@ export function CreateEventForm({ userId }: CreateEventFormProps) {
     setLoading(true)
     setError(null)
 
-    // Generate a unique UID for the event
     const uid = nanoid(10)
+    const event_code = generateEventCode()
 
     const { data, error: insertError } = await supabase
       .from("events")
@@ -39,6 +40,7 @@ export function CreateEventForm({ userId }: CreateEventFormProps) {
         title,
         description,
         creator_id: userId,
+        event_code,
       })
       .select()
       .single()
