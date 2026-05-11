@@ -39,12 +39,16 @@ export type WorkerToViewer =
 
 export interface EventState {
   eventId: string;
-  eventCode: string | null;  // populated after Supabase lookup on hello
+  eventCode: string | null;
   sourceLang: string;
   targetLangs: string[];
   startedAt: number;
   paused: boolean;
   broadcasterWs: WebSocket | null;
+  /** Rolling window of last 2 finalized source utterances (for translation context) */
+  sourceHistory: string[];
+  /** Domain-specific glossary terms loaded from events.glossary */
+  glossary: Record<string, string>;
   /** Active per-language pipelines, keyed by ISO lang code */
   pipelines: Map<string, LanguagePipeline>;
   /** Viewer WebSockets, keyed by lang code */

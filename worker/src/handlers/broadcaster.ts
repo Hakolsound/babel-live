@@ -2,6 +2,9 @@ import type { ServerWebSocket } from 'bun';
 import type { ClientMeta, BroadcasterUp, WorkerToBroadcaster, EventState } from '../types';
 import { events, eventsByCode } from '../index';
 import { supabase } from '../lib/supabase';
+import { translateText } from '../lib/translate';
+
+const SOURCE_HISTORY_SIZE = 2;
 
 export async function handleBroadcasterMessage(
   ws: ServerWebSocket<ClientMeta>,
@@ -20,44 +23,44 @@ export async function handleBroadcasterMessage(
         startedAt: Date.now(),
         paused: false,
         broadcasterWs: ws as unknown as WebSocket,
+        sourceHistory: [],
+        glossary: {},
         pipelines: new Map(),
         viewers: new Map(),
       };
       events.set(msg.eventId, state);
 
-      // Look up event_code + update fly_region in Supabase
       lookupAndRegisterEvent(msg.eventId, state).catch((err: unknown) => {
         console.error(`[broadcaster] event lookup failed event=${msg.eventId}`, err);
       });
 
-      const reply: WorkerToBroadcaster = { type: 'ready' };
-      ws.send(JSON.stringify(reply));
-
+      ws.send(JSON.stringify({ type: 'ready' } satisfies WorkerToBroadcaster));
       console.log(`[broadcaster] hello event=${msg.eventId} source=${msg.sourceLang} targets=${msg.targetLangs.join(',')}`);
       break;
     }
 
     case 'transcript': {
       const state = events.get(ws.data.eventId ?? '');
-      if (!state || state.paused) return;
+      if (!state || state.paused || !msg.final) return;
 
-      // Phase 2: fan out to translation pipeline here
-      // Phase 1: fan out source captions to source-lang viewers
-      const viewerSet = state.viewers.get(msg.lang);
-      if (viewerSet) {
-        const caption = JSON.stringify({ type: 'caption', text: msg.text, ts: msg.ts, final: msg.final });
-        for (const viewer of viewerSet) {
-          try {
-            (viewer as unknown as ServerWebSocket<ClientMeta>).send(caption);
-          } catch { /* viewer may be gone */ }
-        }
+      // Update source history (rolling window)
+      state.sourceHistory.push(msg.text);
+      if (state.sourceHistory.length > SOURCE_HISTORY_SIZE) {
+        state.sourceHistory.shift();
       }
 
-      // Persist final source transcripts
-      if (msg.final) {
-        persistTranscript(state.eventId, msg.lang, msg.text, msg.ts).catch((err: unknown) => {
-          console.error(`[broadcaster] transcript persist failed`, err);
-        });
+      // Persist source transcript
+      persistTranscript(state.eventId, msg.lang, msg.text, msg.ts).catch((err: unknown) => {
+        console.error('[broadcaster] source transcript persist failed', err);
+      });
+
+      // Fan source caption to viewers watching this language
+      fanOutCaption(state, msg.lang, msg.text, msg.ts, true);
+
+      // Translate to each active target language in parallel
+      if (state.targetLangs.length > 0) {
+        const context = [...state.sourceHistory.slice(0, -1)]; // prior utterances only
+        translateAllTargets(state, msg.text, context, msg.ts);
       }
       break;
     }
@@ -88,16 +91,60 @@ export async function handleBroadcasterMessage(
     }
 
     case 'audio': {
-      // Unused in Option B (Scribe is browser-direct)
+      // Unused in Option B
       break;
     }
+  }
+}
+
+function translateAllTargets(
+  state: EventState,
+  text: string,
+  priorContext: string[],
+  ts: number,
+): void {
+  for (const targetLang of state.targetLangs) {
+    translateText({
+      text,
+      sourceLang: state.sourceLang === 'auto' ? 'auto-detected' : state.sourceLang,
+      targetLang,
+      priorContext,
+      glossary: state.glossary,
+    })
+      .then((translated) => {
+        persistTranscript(state.eventId, targetLang, translated, ts).catch((err: unknown) => {
+          console.error(`[translation] persist failed lang=${targetLang}`, err);
+        });
+        fanOutCaption(state, targetLang, translated, ts, true);
+        console.log(`[translation] event=${state.eventId} lang=${targetLang} "${translated.slice(0, 60)}"`);
+      })
+      .catch((err: unknown) => {
+        console.error(`[translation] failed lang=${targetLang}`, err);
+      });
+  }
+}
+
+function fanOutCaption(
+  state: EventState,
+  lang: string,
+  text: string,
+  ts: number,
+  final: boolean,
+): void {
+  const viewerSet = state.viewers.get(lang);
+  if (!viewerSet || viewerSet.size === 0) return;
+  const msg = JSON.stringify({ type: 'caption', text, ts, final });
+  for (const viewer of viewerSet) {
+    try {
+      (viewer as unknown as ServerWebSocket<ClientMeta>).send(msg);
+    } catch { /* viewer gone */ }
   }
 }
 
 async function lookupAndRegisterEvent(eventId: string, state: EventState): Promise<void> {
   const { data, error } = await supabase
     .from('events')
-    .select('event_code')
+    .select('event_code, glossary')
     .eq('id', eventId)
     .single();
 
@@ -109,12 +156,16 @@ async function lookupAndRegisterEvent(eventId: string, state: EventState): Promi
   if (data.event_code) {
     state.eventCode = data.event_code as string;
     eventsByCode.set(data.event_code as string, eventId);
-    console.log(`[broadcaster] registered event=${eventId} code=${data.event_code}`);
   }
 
-  // Record which Fly.io region owns this event
+  if (data.glossary && typeof data.glossary === 'object') {
+    state.glossary = data.glossary as Record<string, string>;
+  }
+
   const region = process.env.FLY_REGION ?? 'dev';
   await supabase.from('events').update({ fly_region: region }).eq('id', eventId);
+
+  console.log(`[broadcaster] registered event=${eventId} code=${state.eventCode} region=${region}`);
 }
 
 async function persistTranscript(
@@ -130,32 +181,22 @@ async function persistTranscript(
     timestamp_ms: timestampMs,
     is_final: true,
   });
-
-  if (error) {
-    console.error(`[broadcaster] transcript_entries insert failed`, error);
-  }
+  if (error) console.error('[broadcaster] transcript_entries insert failed', error);
 }
 
 export async function teardownEvent(eventId: string): Promise<void> {
   const state = events.get(eventId);
   if (!state) return;
 
-  // Notify all viewers
   for (const [, viewerSet] of state.viewers) {
     for (const viewer of viewerSet) {
       try {
-        (viewer as unknown as ServerWebSocket<ClientMeta>).send(
-          JSON.stringify({ type: 'event_ended' }),
-        );
-      } catch { /* viewer may already be gone */ }
+        (viewer as unknown as ServerWebSocket<ClientMeta>).send(JSON.stringify({ type: 'event_ended' }));
+      } catch { /* gone */ }
     }
   }
 
-  // Phase 3+: tear down TTS pipelines here
-
-  if (state.eventCode) {
-    eventsByCode.delete(state.eventCode);
-  }
+  if (state.eventCode) eventsByCode.delete(state.eventCode);
   events.delete(eventId);
   console.log(`[broadcaster] torn down event=${eventId}`);
 }
