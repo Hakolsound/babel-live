@@ -3,7 +3,7 @@
 import { useRef, useCallback, useState } from "react"
 import { QRCodeSVG } from "qrcode.react"
 import { Download, QrCode, X } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/button" // used for download button only
 
 interface EventQRProps {
   url: string
@@ -59,16 +59,17 @@ export function EventQR({ url, eventCode, eventTitle }: EventQRProps) {
   return (
     <div className="relative">
       {/* Trigger */}
-      <Button
-        variant="outline"
-        size="sm"
-        className="gap-1.5 border-white/15 text-white/50 hover:text-white hover:bg-white/10 hover:border-white/30 bg-transparent"
+      <button
         onClick={() => setOpen((v) => !v)}
         aria-label="Show QR code"
+        className="flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11px] transition-colors"
+        style={{ border: "1px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.5)", background: "transparent" }}
+        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.85)"; (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)"; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.5)"; (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
       >
         <QrCode className="h-3.5 w-3.5" />
         QR
-      </Button>
+      </button>
 
       {/* Popover */}
       {open && (
