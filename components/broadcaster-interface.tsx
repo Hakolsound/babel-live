@@ -7,7 +7,8 @@ import {
   AlertCircle, Languages, Save, Wifi, WifiOff,
   Headphones, Users, ChevronDown, Pause, Play,
   Download, Plus, Trash2, ArrowLeft, Globe,
-  BookOpen, BookMarked, StickyNote,
+  BookOpen, StickyNote, Radio, Lock, Unlock,
+  BookMarked,
 } from "lucide-react";
 import Link from "next/link";
 import { useScribe } from "@elevenlabs/react";
@@ -50,6 +51,9 @@ interface LanguageDetectorConstructor {
 }
 declare global { interface Window { LanguageDetector?: LanguageDetectorConstructor; } }
 
+type NavSection = "setup" | "knowledge" | "notes" | "monitor";
+type KnowledgeTab = "knowledge" | "glossary";
+
 const MAX_MONITOR_LINES = 8;
 const MAX_LATENCY_POINTS = 60;
 
@@ -66,29 +70,43 @@ function HealthDot({ lastAt, active }: { lastAt: number | null; active: boolean 
   return <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />;
 }
 
-// ── Sidebar section ───────────────────────────────────────────────────────────
-function SideSection({
-  icon, label, badge, defaultOpen = false, children,
+// ── Nav item ──────────────────────────────────────────────────────────────────
+function NavItem({
+  icon, label, badge, active, dimmed = false, onClick,
 }: {
   icon: React.ReactNode; label: string; badge?: string;
-  defaultOpen?: boolean; children: React.ReactNode;
+  active: boolean; dimmed?: boolean; onClick: () => void;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border-b border-white/[0.05]">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-white/[0.03] group"
-      >
-        <span className="text-white/25 group-hover:text-white/40 transition-colors">{icon}</span>
-        <span className="flex-1 text-[10px] font-bold tracking-[0.18em] uppercase text-white/40 group-hover:text-white/55 transition-colors">{label}</span>
-        {badge && (
-          <span className="text-[10px] font-mono text-white/25 bg-white/[0.07] px-1.5 py-0.5 rounded-full">{badge}</span>
-        )}
-        <ChevronDown className={`h-3 w-3 text-white/20 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
-    </div>
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-colors relative"
+      style={{
+        background: active ? "rgba(255,255,255,0.07)" : "transparent",
+        color: active
+          ? "rgba(255,255,255,0.85)"
+          : dimmed
+            ? "rgba(255,255,255,0.22)"
+            : "rgba(255,255,255,0.42)",
+      }}
+    >
+      {active && (
+        <span
+          className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r-full"
+          style={{ background: "rgba(255,255,255,0.45)" }}
+        />
+      )}
+      <span className="shrink-0">{icon}</span>
+      <span className="text-xs font-medium flex-1">{label}</span>
+      {badge && (
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded-full shrink-0"
+          style={{ background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.3)" }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -286,6 +304,11 @@ function GlossaryPanel({
   );
 }
 
+// ── Divider ───────────────────────────────────────────────────────────────────
+function Divider() {
+  return <div className="w-full h-px my-1" style={{ background: "rgba(255,255,255,0.06)" }} />;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceProps) {
   const [copied, setCopied] = useState(false);
@@ -327,6 +350,11 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   const [showChecklist, setShowChecklist] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [exportingTranscripts, setExportingTranscripts] = useState(false);
+
+  // Layout state
+  const [activeSection, setActiveSection] = useState<NavSection>("setup");
+  const [micPinned, setMicPinned] = useState(false);
+  const [knowledgeTab, setKnowledgeTab] = useState<KnowledgeTab>("knowledge");
 
   const sequenceNumberRef = useRef(0);
   const eventStartRef = useRef<number>(0);
@@ -434,6 +462,30 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Mid-broadcast mic switch (safety pin)
+  const handleDeviceChange = useCallback(async (newDeviceId: string) => {
+    setSelectedDeviceId(newDeviceId);
+    if (!isRecording || !micPinned) return;
+    try {
+      setError(null);
+      scribe.disconnect();
+      const res = await fetch(`/api/scribe-token?eventUid=${event.uid}`);
+      if (!res.ok) { const e = await res.json() as { error?: string }; throw new Error(e.error ?? "Token error"); }
+      const { token } = await res.json() as { token: string };
+      await scribe.connect({
+        token,
+        microphone: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          deviceId: newDeviceId,
+        },
+        ...(selectedSourceLang ? { languageCode: selectedSourceLang } : {}),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to switch microphone");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRecording, micPinned, event.uid, selectedSourceLang]);
+
   const handleStartRecording = async () => {
     setShowChecklist(false);
     try {
@@ -445,6 +497,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
       setLatencyHistory({});
       setPausedLangs(new Set());
       setShowExport(false);
+      setActiveSection("monitor");
 
       const worker = new WorkerClient({
         onReady: () => setWorkerConnected(true),
@@ -483,6 +536,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
     setPartialText("");
     setWorkerConnected(false);
     setShowExport(true);
+    setMicPinned(false);
   };
 
   const handleExportTranscripts = async () => {
@@ -551,20 +605,17 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
 
       {/* ── HEADER ──────────────────────────────────────────────────────────── */}
       <header
-        className="h-11 shrink-0 flex items-center gap-3 px-4"
+        className="h-12 shrink-0 flex items-center gap-3 px-4"
         style={{ borderBottom: "1px solid rgba(255,255,255,0.07)", background: "rgba(0,0,0,0.35)" }}
       >
         {/* Brand */}
         <span className="font-black text-sm tracking-[0.2em] text-white shrink-0">BABEL</span>
-
         <span style={{ color: "rgba(255,255,255,0.1)" }} className="text-base leading-none select-none">·</span>
 
-        {/* Event title */}
+        {/* Event info */}
         <h1 className="font-semibold text-sm truncate max-w-[200px]" style={{ color: "rgba(255,255,255,0.65)" }}>
           {event.title}
         </h1>
-
-        {/* Event code */}
         {event.event_code && (
           <span
             className="font-mono text-[10px] tracking-widest shrink-0 px-1.5 py-0.5 rounded"
@@ -574,7 +625,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           </span>
         )}
 
-        {/* Live badge */}
+        {/* LIVE badge */}
         {isRecording && (
           <div
             className="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-full"
@@ -586,6 +637,14 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
         )}
 
         <div className="flex-1 min-w-0" />
+
+        {/* Detected language */}
+        {isRecording && detectedLanguage && (
+          <Badge className="bg-white/[0.08] text-white/50 gap-1.5 text-[10px] border-white/10 shrink-0">
+            <Languages className="h-2.5 w-2.5" />
+            {detectedLanguage.toUpperCase()}
+          </Badge>
+        )}
 
         {/* Viewer URL strip */}
         <div className="hidden md:flex items-center gap-1 shrink-0">
@@ -612,7 +671,6 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           )}
         </div>
 
-        {/* Divider */}
         <div className="w-px h-5 shrink-0 mx-1" style={{ background: "rgba(255,255,255,0.08)" }} />
 
         {/* Connection status */}
@@ -627,7 +685,43 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           </span>
         </div>
 
-        {/* Divider */}
+        <div className="w-px h-5 shrink-0 mx-1" style={{ background: "rgba(255,255,255,0.08)" }} />
+
+        {/* Export (post-broadcast) */}
+        {showExport && !isRecording && (
+          <button
+            onClick={handleExportTranscripts}
+            disabled={exportingTranscripts}
+            className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg transition-colors shrink-0 hover:bg-white/[0.05]"
+            style={{ color: "rgba(255,255,255,0.38)", border: "1px solid rgba(255,255,255,0.1)" }}
+          >
+            <Download className="h-3.5 w-3.5" />
+            {exportingTranscripts ? "Exporting…" : "Export SRT"}
+          </button>
+        )}
+
+        {/* ── CTA ── */}
+        {!isRecording ? (
+          <button
+            onClick={() => setShowChecklist(true)}
+            disabled={scribe.isConnected || !selectedDeviceId}
+            className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] shrink-0"
+            style={{ background: "white", color: "black" }}
+          >
+            <Mic className="h-3.5 w-3.5" />
+            Go Live
+          </button>
+        ) : (
+          <button
+            onClick={handleStopRecording}
+            className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all active:scale-[0.98] shrink-0"
+            style={{ background: "#dc2626", color: "white" }}
+          >
+            <MicOff className="h-3.5 w-3.5" />
+            End Broadcast
+          </button>
+        )}
+
         <div className="w-px h-5 shrink-0 mx-1" style={{ background: "rgba(255,255,255,0.08)" }} />
 
         {/* Dashboard */}
@@ -644,61 +738,161 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
       {/* ── BODY ─────────────────────────────────────────────────────────────── */}
       <div className="flex-1 flex min-h-0">
 
-        {/* ── SIDEBAR ──────────────────────────────────────────────────────── */}
-        <aside
-          className="w-64 shrink-0 flex flex-col overflow-y-auto"
+        {/* ── NAV SIDEBAR ──────────────────────────────────────────────────── */}
+        <nav
+          className="w-48 shrink-0 flex flex-col py-2 overflow-y-auto"
           style={{ background: "#0b0d17", borderRight: "1px solid rgba(255,255,255,0.06)" }}
         >
+          {/* PRE-EVENT group */}
+          <div className="px-4 pt-3 pb-1.5">
+            <span
+              className="text-[9px] font-bold tracking-[0.22em] uppercase transition-colors"
+              style={{ color: isRecording ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.25)" }}
+            >
+              Pre-Event
+            </span>
+          </div>
 
-          {/* Input Device */}
-          <SideSection icon={<Mic className="h-3.5 w-3.5" />} label="Input" defaultOpen>
-            <div className="space-y-3">
-              <DevicePicker devices={audioDevices} value={selectedDeviceId} onChange={setSelectedDeviceId} disabled={isRecording} />
-              {isRecording && (
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-[3px] items-end">
-                    {[...Array(5)].map((_, i) => (
-                      <span
-                        key={i}
-                        className={`inline-block w-[3px] rounded-sm bg-emerald-400 ${partialText ? "animate-pulse" : "opacity-20"}`}
-                        style={{ height: `${8 + i * 3}px`, animationDelay: `${i * 80}ms` }}
-                      />
-                    ))}
-                  </div>
-                  <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.35)" }}>
-                    {partialText ? "Picking up audio" : "Listening…"}
-                  </span>
-                  <span className="ml-auto text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>
-                    {committedCount} seg
-                  </span>
-                </div>
-              )}
+          <NavItem
+            icon={<Mic className="h-3.5 w-3.5" />}
+            label="Setup"
+            active={activeSection === "setup"}
+            dimmed={isRecording}
+            onClick={() => setActiveSection("setup")}
+          />
+          <NavItem
+            icon={<BookOpen className="h-3.5 w-3.5" />}
+            label="Knowledge"
+            badge={knowledge.keyterms.length > 0 ? `${knowledge.keyterms.length}` : undefined}
+            active={activeSection === "knowledge"}
+            dimmed={isRecording}
+            onClick={() => setActiveSection("knowledge")}
+          />
+          <NavItem
+            icon={<StickyNote className="h-3.5 w-3.5" />}
+            label="Notes"
+            active={activeSection === "notes"}
+            dimmed={isRecording}
+            onClick={() => setActiveSection("notes")}
+          />
+
+          {/* LIVE group */}
+          <div className="px-4 pt-5 pb-1.5 flex items-center gap-2">
+            <span className="text-[9px] font-bold tracking-[0.22em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+              Live
+            </span>
+            {isRecording && <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />}
+          </div>
+
+          <NavItem
+            icon={<Radio className="h-3.5 w-3.5" />}
+            label="Monitor"
+            badge={totalListeners > 0 ? `${totalListeners}` : undefined}
+            active={activeSection === "monitor"}
+            onClick={() => setActiveSection("monitor")}
+          />
+
+          <div className="flex-1" />
+        </nav>
+
+        {/* ── MAIN ─────────────────────────────────────────────────────────── */}
+        <main className="flex-1 min-w-0 overflow-y-auto" style={{ background: "#07090e" }}>
+
+          {error && (
+            <div className="mx-6 mt-6">
+              <Alert variant="destructive" className="bg-red-950/40 border-red-800/40 text-red-300">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
             </div>
-          </SideSection>
+          )}
 
-          {/* Languages */}
-          <SideSection icon={<Globe className="h-3.5 w-3.5" />} label="Languages" defaultOpen>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold tracking-widest uppercase" style={{ color: "rgba(255,255,255,0.28)" }}>
-                  Source
-                </label>
+          {/* ── SETUP ── */}
+          {activeSection === "setup" && (
+            <div className="p-6 max-w-xl space-y-6">
+
+              {/* Input device */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+                  Input Device
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <DevicePicker
+                      devices={audioDevices}
+                      value={selectedDeviceId}
+                      onChange={handleDeviceChange}
+                      disabled={isRecording && !micPinned}
+                    />
+                  </div>
+                  {/* Safety pin — unlock mic while live */}
+                  <button
+                    onClick={() => setMicPinned((p) => !p)}
+                    title={micPinned ? "Lock mic selection" : "Unlock mic selection while live (use with care)"}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0"
+                    style={{
+                      background: micPinned ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)",
+                      border: micPinned ? "1px solid rgba(245,158,11,0.35)" : "1px solid rgba(255,255,255,0.1)",
+                      color: micPinned ? "rgba(245,158,11,0.85)" : "rgba(255,255,255,0.28)",
+                    }}
+                  >
+                    {micPinned ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+
+                {isRecording && (
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-[3px] items-end">
+                      {[...Array(5)].map((_, i) => (
+                        <span
+                          key={i}
+                          className={`inline-block w-[3px] rounded-sm bg-emerald-400 ${partialText ? "animate-pulse" : "opacity-20"}`}
+                          style={{ height: `${8 + i * 3}px`, animationDelay: `${i * 80}ms` }}
+                        />
+                      ))}
+                    </div>
+                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+                      {partialText ? "Picking up audio" : "Listening…"}
+                    </span>
+                    <span className="ml-auto text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>
+                      {committedCount} seg
+                    </span>
+                  </div>
+                )}
+
+                {micPinned && isRecording && (
+                  <p className="text-[11px]" style={{ color: "rgba(245,158,11,0.7)" }}>
+                    Mic unlocked — switching will briefly interrupt transcription
+                  </p>
+                )}
+              </div>
+
+              <Divider />
+
+              {/* Source language */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+                  Source Language
+                </p>
                 <div className="[&_button]:bg-white/5 [&_button]:border-white/10 [&_button]:text-white/70 [&_button:hover]:bg-white/[0.08]">
                   <LanguageSelector value={selectedSourceLang} onValueChange={setSelectedSourceLang} />
                 </div>
                 <p className="text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>Blank = auto-detect</p>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold tracking-widest uppercase" style={{ color: "rgba(255,255,255,0.28)" }}>
-                  Translate to
-                </label>
+              <Divider />
+
+              {/* Target languages */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+                  Translate To
+                </p>
                 <div
-                  className="flex flex-wrap gap-1 min-h-[28px] p-2 rounded-lg"
-                  style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.09)" }}
+                  className="flex flex-wrap gap-1.5 min-h-[40px] p-3 rounded-xl"
+                  style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}
                 >
                   {targetLangs.length === 0 ? (
-                    <span className="text-[10px] self-center" style={{ color: "rgba(255,255,255,0.2)" }}>No languages yet</span>
+                    <span className="text-xs self-center" style={{ color: "rgba(255,255,255,0.2)" }}>No languages added yet</span>
                   ) : (
                     targetLangs.map((lang) => (
                       <Badge
@@ -721,220 +915,208 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                     />
                   </div>
                 )}
+                {!isRecording && (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={handleSaveLanguages}
+                      disabled={saving}
+                      className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md transition-colors hover:bg-white/[0.05]"
+                      style={{ color: "rgba(255,255,255,0.38)" }}
+                    >
+                      {saved ? <Check className="h-3 w-3 text-emerald-400" /> : <Save className="h-3 w-3" />}
+                      {saving ? "Saving…" : saved ? "Saved" : "Save"}
+                    </button>
+                  </div>
+                )}
               </div>
-
-              {!isRecording && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={handleSaveLanguages}
-                    disabled={saving}
-                    className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md transition-colors hover:bg-white/[0.05]"
-                    style={{ color: "rgba(255,255,255,0.38)" }}
-                  >
-                    {saved ? <Check className="h-3 w-3 text-emerald-400" /> : <Save className="h-3 w-3" />}
-                    {saving ? "Saving…" : saved ? "Saved" : "Save"}
-                  </button>
-                </div>
-              )}
-            </div>
-          </SideSection>
-
-          {/* Knowledge */}
-          <SideSection
-            icon={<BookOpen className="h-3.5 w-3.5" />}
-            label="Knowledge"
-            badge={knowledge.keyterms.length > 0 ? `${knowledge.keyterms.length} terms` : undefined}
-          >
-            <div className="[&_.card]:bg-transparent [&_.card]:border-white/[0.08] [&_h3]:text-white [&_p]:text-white/50 [&_label]:text-white/45 [&_input]:bg-white/5 [&_input]:border-white/10 [&_input]:text-white [&_textarea]:bg-white/5 [&_textarea]:border-white/10 [&_textarea]:text-white [&_.separator]:bg-white/[0.07] [&_button]:text-white/50">
-              <KnowledgePanel
-                eventId={event.id}
-                eventTitle={event.title}
-                initial={knowledge}
-                organization={event.organization ?? ""}
-                targetLangs={targetLangs}
-                onChange={setKnowledge}
-              />
-            </div>
-          </SideSection>
-
-          {/* Glossary */}
-          <SideSection
-            icon={<BookMarked className="h-3.5 w-3.5" />}
-            label="Glossary"
-            badge={Object.keys(glossary).length > 0 ? `${Object.keys(glossary).length}` : undefined}
-          >
-            <GlossaryPanel glossary={glossary} onChange={setGlossary} />
-          </SideSection>
-
-          {/* Presenter Notes */}
-          <SideSection icon={<StickyNote className="h-3.5 w-3.5" />} label="Notes">
-            <textarea
-              value={presenterNotes}
-              onChange={(e) => handlePresenterNotesChange(e.target.value)}
-              placeholder="Notes for yourself… (auto-saved)"
-              className="w-full rounded-lg px-3 py-2 text-xs resize-none focus:outline-none placeholder:opacity-30"
-              style={{
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.09)",
-                color: "rgba(255,255,255,0.75)",
-                caretColor: "white",
-              }}
-              rows={5}
-            />
-          </SideSection>
-
-          {/* Spacer */}
-          <div className="flex-1" />
-
-          {/* Start / Stop — pinned bottom */}
-          <div className="p-4 space-y-2 shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,0.07)" }}>
-
-            {isRecording && detectedLanguage && (
-              <div className="flex justify-center pb-1">
-                <Badge className="bg-white/[0.08] text-white/50 gap-1.5 text-[10px] border-white/10">
-                  <Languages className="h-2.5 w-2.5" />
-                  Detected: {detectedLanguage.toUpperCase()}
-                </Badge>
-              </div>
-            )}
-
-            {showExport && !isRecording && (
-              <button
-                onClick={handleExportTranscripts}
-                disabled={exportingTranscripts}
-                className="w-full flex items-center justify-center gap-1.5 text-[11px] py-2 rounded-xl transition-colors hover:bg-white/[0.05]"
-                style={{ color: "rgba(255,255,255,0.38)", border: "1px solid rgba(255,255,255,0.1)" }}
-              >
-                <Download className="h-3.5 w-3.5" />
-                {exportingTranscripts ? "Exporting…" : "Export Transcripts (SRT)"}
-              </button>
-            )}
-
-            {!isRecording ? (
-              <button
-                onClick={() => setShowChecklist(true)}
-                disabled={scribe.isConnected || !selectedDeviceId}
-                className="w-full h-12 flex items-center justify-center gap-2 rounded-xl font-bold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
-                style={{ background: "white", color: "black" }}
-              >
-                <Mic className="h-4 w-4" />
-                Start Broadcasting
-              </button>
-            ) : (
-              <button
-                onClick={handleStopRecording}
-                className="w-full h-12 flex items-center justify-center gap-2 rounded-xl font-bold text-sm transition-all active:scale-[0.98]"
-                style={{ background: "#dc2626", color: "white" }}
-              >
-                <MicOff className="h-4 w-4" />
-                Stop Broadcasting
-              </button>
-            )}
-          </div>
-        </aside>
-
-        {/* ── MAIN ─────────────────────────────────────────────────────────── */}
-        <main className="flex-1 min-w-0 overflow-y-auto" style={{ background: "#07090e" }}>
-
-          {error && (
-            <div className="mx-5 mt-5">
-              <Alert variant="destructive" className="bg-red-950/40 border-red-800/40 text-red-300">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
             </div>
           )}
 
-          <div className="p-5 space-y-6">
+          {/* ── KNOWLEDGE + GLOSSARY ── */}
+          {activeSection === "knowledge" && (
+            <div className="p-6">
+              {/* Tabs */}
+              <div
+                className="flex items-center gap-0 mb-6"
+                style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}
+              >
+                <button
+                  onClick={() => setKnowledgeTab("knowledge")}
+                  className="flex items-center gap-2 text-xs px-4 py-2.5 transition-colors"
+                  style={{
+                    borderBottom: knowledgeTab === "knowledge" ? "2px solid rgba(255,255,255,0.6)" : "2px solid transparent",
+                    color: knowledgeTab === "knowledge" ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)",
+                    marginBottom: "-1px",
+                  }}
+                >
+                  <BookOpen className="h-3.5 w-3.5" />
+                  Knowledge Base
+                  {knowledge.keyterms.length > 0 && (
+                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>
+                      {knowledge.keyterms.length}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setKnowledgeTab("glossary")}
+                  className="flex items-center gap-2 text-xs px-4 py-2.5 transition-colors"
+                  style={{
+                    borderBottom: knowledgeTab === "glossary" ? "2px solid rgba(255,255,255,0.6)" : "2px solid transparent",
+                    color: knowledgeTab === "glossary" ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)",
+                    marginBottom: "-1px",
+                  }}
+                >
+                  <BookMarked className="h-3.5 w-3.5" />
+                  Glossary
+                  {Object.keys(glossary).length > 0 && (
+                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>
+                      {Object.keys(glossary).length}
+                    </span>
+                  )}
+                </button>
+              </div>
 
-            {/* Monitor section label */}
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.18)" }}>
-                Live Monitor
-              </p>
-              {committedCount > 0 && (
-                <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>
-                  {committedCount} segments
-                </span>
+              {knowledgeTab === "knowledge" && (
+                <div className="[&_input]:bg-white/5 [&_input]:border-white/10 [&_input]:text-white [&_textarea]:bg-white/5 [&_textarea]:border-white/10 [&_textarea]:text-white [&_label]:text-white/45 [&_.separator]:bg-white/[0.07] [&_[role=separator]]:bg-white/[0.07]">
+                  <KnowledgePanel
+                    eventId={event.id}
+                    eventTitle={event.title}
+                    initial={knowledge}
+                    organization={event.organization ?? ""}
+                    targetLangs={targetLangs}
+                    onChange={setKnowledge}
+                    defaultOpen
+                  />
+                </div>
+              )}
+
+              {knowledgeTab === "glossary" && (
+                <div className="max-w-xl space-y-4">
+                  <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+                    Translation Overrides
+                  </p>
+                  <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
+                    Force specific translations for words or phrases. Applied before AI translation.
+                  </p>
+                  <GlossaryPanel glossary={glossary} onChange={setGlossary} />
+                </div>
               )}
             </div>
+          )}
 
-            {/* Translation feeds */}
-            <div
-              className="flex gap-3 overflow-x-auto pb-1"
-              style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.08) transparent" }}
-            >
-              <SourceFeed captions={captions} partialText={partialText} detectedLang={detectedLanguage} />
-              {targetLangs.map((lang) => (
-                <LangFeed
-                  key={lang}
-                  lang={lang}
-                  lines={translatedFeeds[lang] ?? []}
-                  lastAt={lastTranslationAt[lang] ?? null}
-                  listenerCount={listenerCounts[lang] ?? 0}
-                  isRecording={isRecording}
-                  paused={pausedLangs.has(lang)}
-                  onTogglePause={() => handleTogglePauseLang(lang)}
-                  latency={latencyHistory[lang] ?? []}
-                />
-              ))}
+          {/* ── NOTES ── */}
+          {activeSection === "notes" && (
+            <div className="p-6 max-w-2xl">
+              <p className="text-[10px] font-bold tracking-[0.2em] uppercase mb-4" style={{ color: "rgba(255,255,255,0.25)" }}>
+                Presenter Notes
+              </p>
+              <textarea
+                value={presenterNotes}
+                onChange={(e) => handlePresenterNotesChange(e.target.value)}
+                placeholder="Notes for yourself… (auto-saved)"
+                className="w-full rounded-xl px-4 py-3 text-sm resize-none focus:outline-none placeholder:opacity-30"
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "rgba(255,255,255,0.75)",
+                  caretColor: "white",
+                  minHeight: "420px",
+                }}
+              />
             </div>
+          )}
 
-            {/* Audience */}
-            <div className="space-y-3">
+          {/* ── MONITOR ── */}
+          {activeSection === "monitor" && (
+            <div className="p-5 space-y-6">
+
               <div className="flex items-center justify-between">
                 <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.18)" }}>
-                  Audience
+                  Live Monitor
                 </p>
-                <div className="flex items-center gap-2">
-                  <Users className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.3)" }} />
-                  <span className="font-black text-lg leading-none text-white">{totalListeners}</span>
-                  <span className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>connected</span>
-                </div>
+                {committedCount > 0 && (
+                  <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>
+                    {committedCount} segments
+                  </span>
+                )}
               </div>
 
-              {Object.keys(listenerCounts).length === 0 ? (
-                <p className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
-                  No viewers yet — share the QR code or link above
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2">
-                  {Object.entries(listenerCounts).map(([lang, count]) => (
-                    <div
-                      key={lang}
-                      className="flex items-center justify-between px-3 py-2.5 rounded-xl"
-                      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}
-                    >
-                      <div>
-                        <p className="font-semibold text-sm" style={{ color: "rgba(255,255,255,0.8)" }}>{langName(lang)}</p>
-                        <p className="text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.25)" }}>{lang.toUpperCase()}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-black text-xl text-white leading-none">{count}</p>
-                        <div className="flex justify-end mt-1">
-                          <HealthDot lastAt={lastTranslationAt[lang] ?? null} active={isRecording} />
+              {/* Translation feeds */}
+              <div
+                className="flex gap-3 overflow-x-auto pb-1"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.08) transparent" }}
+              >
+                <SourceFeed captions={captions} partialText={partialText} detectedLang={detectedLanguage} />
+                {targetLangs.map((lang) => (
+                  <LangFeed
+                    key={lang}
+                    lang={lang}
+                    lines={translatedFeeds[lang] ?? []}
+                    lastAt={lastTranslationAt[lang] ?? null}
+                    listenerCount={listenerCounts[lang] ?? 0}
+                    isRecording={isRecording}
+                    paused={pausedLangs.has(lang)}
+                    onTogglePause={() => handleTogglePauseLang(lang)}
+                    latency={latencyHistory[lang] ?? []}
+                  />
+                ))}
+              </div>
+
+              {/* Audience */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.18)" }}>
+                    Audience
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Users className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.3)" }} />
+                    <span className="font-black text-lg leading-none text-white">{totalListeners}</span>
+                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>connected</span>
+                  </div>
+                </div>
+
+                {Object.keys(listenerCounts).length === 0 ? (
+                  <p className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
+                    No viewers yet — share the QR code or link above
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2">
+                    {Object.entries(listenerCounts).map(([lang, count]) => (
+                      <div
+                        key={lang}
+                        className="flex items-center justify-between px-3 py-2.5 rounded-xl"
+                        style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}
+                      >
+                        <div>
+                          <p className="font-semibold text-sm" style={{ color: "rgba(255,255,255,0.8)" }}>{langName(lang)}</p>
+                          <p className="text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.25)" }}>{lang.toUpperCase()}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-black text-xl text-white leading-none">{count}</p>
+                          <div className="flex justify-end mt-1">
+                            <HealthDot lastAt={lastTranslationAt[lang] ?? null} active={isRecording} />
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Active mic reminder */}
+              {isRecording && (
+                <div
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+                  style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.28)" }}
+                >
+                  <Mic className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{selectedDeviceLabel}</span>
                 </div>
               )}
             </div>
+          )}
 
-            {/* Active mic reminder */}
-            {isRecording && (
-              <div
-                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-                style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.28)" }}
-              >
-                <Mic className="h-3 w-3 shrink-0" />
-                <span className="truncate">{selectedDeviceLabel}</span>
-              </div>
-            )}
-
-          </div>
         </main>
-
       </div>
     </div>
   );
