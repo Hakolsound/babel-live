@@ -934,7 +934,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
 
           {/* ── KNOWLEDGE + GLOSSARY ── */}
           {activeSection === "knowledge" && (
-            <div className="p-6">
+            <div className="dark p-6">
               {/* Tabs */}
               <div
                 className="flex items-center gap-0 mb-6"
