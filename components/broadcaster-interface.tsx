@@ -251,6 +251,79 @@ function DevicePicker({
   );
 }
 
+// ── Hold-to-unlock lock button ────────────────────────────────────────────────
+const HOLD_MS = 3000;
+const LOCK_RADIUS = 15;
+const LOCK_CIRC = 2 * Math.PI * LOCK_RADIUS;
+
+function HoldLockButton({
+  locked, onUnlock, onLock,
+}: { locked: boolean; onUnlock: () => void; onLock: () => void }) {
+  const [progress, setProgress] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const startRef = useRef<number>(0);
+
+  const startHold = useCallback(() => {
+    if (!locked) { onLock(); return; }
+    startRef.current = Date.now();
+    const tick = () => {
+      const p = Math.min((Date.now() - startRef.current) / HOLD_MS, 1);
+      setProgress(p);
+      if (p < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        onUnlock();
+        setProgress(0);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  }, [locked, onLock, onUnlock]);
+
+  const cancelHold = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    setProgress(0);
+  }, []);
+
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+
+  return (
+    <button
+      onMouseDown={startHold}
+      onMouseUp={cancelHold}
+      onMouseLeave={cancelHold}
+      onTouchStart={(e) => { e.preventDefault(); startHold(); }}
+      onTouchEnd={cancelHold}
+      onTouchCancel={cancelHold}
+      className="relative w-10 h-10 flex items-center justify-center rounded-xl shrink-0 transition-colors"
+      style={{
+        background: locked ? "rgba(255,255,255,0.05)" : "rgba(245,158,11,0.12)",
+        border: locked ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(245,158,11,0.35)",
+        color: locked ? "rgba(255,255,255,0.4)" : "rgba(245,158,11,0.85)",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+      }}
+      title={locked ? "Hold 3s to unlock mic switching" : "Click to lock"}
+    >
+      {progress > 0 && (
+        <svg className="absolute inset-0 -rotate-90" width="40" height="40" viewBox="0 0 40 40">
+          <circle
+            cx="20" cy="20" r={LOCK_RADIUS}
+            fill="none"
+            stroke="rgba(245,158,11,0.75)"
+            strokeWidth="2.5"
+            strokeDasharray={LOCK_CIRC}
+            strokeDashoffset={LOCK_CIRC * (1 - progress)}
+            strokeLinecap="round"
+          />
+        </svg>
+      )}
+      <span className="relative z-10">
+        {locked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+      </span>
+    </button>
+  );
+}
+
 // ── Glossary panel ────────────────────────────────────────────────────────────
 function GlossaryPanel({
   glossary, onChange,
@@ -809,39 +882,34 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
 
           {/* ── SETUP ── */}
           {activeSection === "setup" && (
-            <div className="p-6 max-w-xl space-y-6">
+            <div className="p-8 max-w-2xl space-y-4">
 
-              {/* Input device */}
-              <div className="space-y-3">
-                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
-                  Input Device
-                </p>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <DevicePicker
-                      devices={audioDevices}
-                      value={selectedDeviceId}
-                      onChange={handleDeviceChange}
-                      disabled={isRecording && !micPinned}
-                    />
+              {/* Microphone */}
+              <div
+                className="rounded-2xl p-6 space-y-4"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1.5 min-w-0 pr-4">
+                    <p className="text-[11px] font-semibold tracking-[0.18em] uppercase" style={{ color: "rgba(255,255,255,0.28)" }}>
+                      Microphone
+                    </p>
+                    <p className="text-lg font-semibold text-white leading-tight truncate">{selectedDeviceLabel}</p>
                   </div>
-                  {/* Safety pin — unlock mic while live */}
-                  <button
-                    onClick={() => setMicPinned((p) => !p)}
-                    title={micPinned ? "Lock mic selection" : "Unlock mic selection while live (use with care)"}
-                    className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0"
-                    style={{
-                      background: micPinned ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)",
-                      border: micPinned ? "1px solid rgba(245,158,11,0.35)" : "1px solid rgba(255,255,255,0.1)",
-                      color: micPinned ? "rgba(245,158,11,0.85)" : "rgba(255,255,255,0.28)",
-                    }}
-                  >
-                    {micPinned ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
-                  </button>
+                  <HoldLockButton
+                    locked={!micPinned}
+                    onUnlock={() => setMicPinned(true)}
+                    onLock={() => setMicPinned(false)}
+                  />
                 </div>
-
+                <DevicePicker
+                  devices={audioDevices}
+                  value={selectedDeviceId}
+                  onChange={handleDeviceChange}
+                  disabled={isRecording && !micPinned}
+                />
                 {isRecording && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5 pt-1">
                     <div className="flex gap-[3px] items-end">
                       {[...Array(5)].map((_, i) => (
                         <span
@@ -851,61 +919,102 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                         />
                       ))}
                     </div>
-                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
                       {partialText ? "Picking up audio" : "Listening…"}
                     </span>
-                    <span className="ml-auto text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>
-                      {committedCount} seg
+                    <span className="ml-auto text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
+                      {committedCount} segments
                     </span>
                   </div>
                 )}
-
                 {micPinned && isRecording && (
-                  <p className="text-[11px]" style={{ color: "rgba(245,158,11,0.7)" }}>
-                    Mic unlocked — switching will briefly interrupt transcription
+                  <p className="text-xs" style={{ color: "rgba(245,158,11,0.65)" }}>
+                    Switching will briefly interrupt transcription
+                  </p>
+                )}
+                {!micPinned && (
+                  <p className="text-xs" style={{ color: "rgba(255,255,255,0.18)" }}>
+                    Hold the lock for 3s to allow switching while live
                   </p>
                 )}
               </div>
 
-              <Divider />
-
-              {/* Source language */}
-              <div className="space-y-3">
-                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
-                  Source Language
-                </p>
+              {/* Source Language */}
+              <div
+                className="rounded-2xl p-6 space-y-4"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-semibold tracking-[0.18em] uppercase" style={{ color: "rgba(255,255,255,0.28)" }}>
+                    Source Language
+                  </p>
+                  <p className="text-lg font-semibold text-white">
+                    {selectedSourceLang ? langName(selectedSourceLang) : "Auto-detect"}
+                  </p>
+                </div>
                 <div className="[&_button]:bg-white/5 [&_button]:border-white/10 [&_button]:text-white/70 [&_button:hover]:bg-white/[0.08]">
                   <LanguageSelector value={selectedSourceLang} onValueChange={setSelectedSourceLang} />
                 </div>
-                <p className="text-[10px]" style={{ color: "rgba(255,255,255,0.2)" }}>Blank = auto-detect</p>
+                <p className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
+                  Leave blank to auto-detect the speaker's language
+                </p>
               </div>
 
-              <Divider />
-
-              {/* Target languages */}
-              <div className="space-y-3">
-                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
-                  Translate To
-                </p>
-                <div
-                  className="flex flex-wrap gap-1.5 min-h-[40px] p-3 rounded-xl"
-                  style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  {targetLangs.length === 0 ? (
-                    <span className="text-xs self-center" style={{ color: "rgba(255,255,255,0.2)" }}>No languages added yet</span>
-                  ) : (
-                    targetLangs.map((lang) => (
-                      <Badge
-                        key={lang}
-                        variant="secondary"
-                        className="bg-white/10 text-white/60 hover:bg-white/15 cursor-pointer text-[10px] h-5"
-                        onClick={() => !isRecording && setTargetLangs((prev) => prev.filter((l) => l !== lang))}
-                      >
-                        {lang.toUpperCase()}{!isRecording && " ×"}
-                      </Badge>
-                    ))
+              {/* Translate To */}
+              <div
+                className="rounded-2xl p-6 space-y-4"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-semibold tracking-[0.18em] uppercase" style={{ color: "rgba(255,255,255,0.28)" }}>
+                      Translate To
+                    </p>
+                    <p className="text-lg font-semibold text-white">
+                      {targetLangs.length === 0
+                        ? "No languages"
+                        : targetLangs.map((l) => langName(l)).join(" · ")}
+                    </p>
+                  </div>
+                  {!isRecording && (
+                    <button
+                      onClick={handleSaveLanguages}
+                      disabled={saving}
+                      className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg transition-colors shrink-0"
+                      style={{
+                        background: "rgba(255,255,255,0.05)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        color: "rgba(255,255,255,0.45)",
+                      }}
+                    >
+                      {saved ? <Check className="h-3 w-3 text-emerald-400" /> : <Save className="h-3 w-3" />}
+                      {saving ? "Saving…" : saved ? "Saved" : "Save"}
+                    </button>
                   )}
                 </div>
+
+                {targetLangs.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {targetLangs.map((lang) => (
+                      <button
+                        key={lang}
+                        onClick={() => !isRecording && setTargetLangs((prev) => prev.filter((l) => l !== lang))}
+                        disabled={isRecording}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                        style={{
+                          background: "rgba(255,255,255,0.07)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          color: "rgba(255,255,255,0.7)",
+                        }}
+                      >
+                        <span className="font-mono">{lang.toUpperCase()}</span>
+                        <span className="text-xs font-normal" style={{ color: "rgba(255,255,255,0.35)" }}>{langName(lang)}</span>
+                        {!isRecording && <span style={{ color: "rgba(255,255,255,0.25)" }}>×</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {!isRecording && (
                   <div className="[&_button]:bg-white/5 [&_button]:border-white/10 [&_button]:text-white/70">
                     <LanguageSelector
@@ -913,19 +1022,6 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                       onValueChange={(lang) => { if (lang && !targetLangs.includes(lang)) setTargetLangs((prev) => [...prev, lang]); }}
                       defaultOption={{ value: null, label: "Add language…" }}
                     />
-                  </div>
-                )}
-                {!isRecording && (
-                  <div className="flex justify-end">
-                    <button
-                      onClick={handleSaveLanguages}
-                      disabled={saving}
-                      className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md transition-colors hover:bg-white/[0.05]"
-                      style={{ color: "rgba(255,255,255,0.38)" }}
-                    >
-                      {saved ? <Check className="h-3 w-3 text-emerald-400" /> : <Save className="h-3 w-3" />}
-                      {saving ? "Saving…" : saved ? "Saved" : "Save"}
-                    </button>
                   </div>
                 )}
               </div>
