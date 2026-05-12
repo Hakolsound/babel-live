@@ -1,6 +1,19 @@
 import type { ServerWebSocket } from 'bun';
-import type { ClientMeta, ViewerUp, WorkerToViewer } from '../types';
+import type { ClientMeta, ViewerUp, WorkerToViewer, WorkerToBroadcaster, EventState } from '../types';
 import { events, eventsByCode } from '../index';
+import { closeTtsPipeline, ensureTtsPipeline } from '../lib/tts-pipeline';
+
+function notifyBroadcasterListenerStats(state: EventState): void {
+  const counts: Record<string, number> = {};
+  for (const [lang, viewers] of state.viewers) {
+    if (viewers.size > 0) counts[lang] = viewers.size;
+  }
+  try {
+    (state.broadcasterWs as unknown as ServerWebSocket<ClientMeta>).send(
+      JSON.stringify({ type: 'listener_stats', counts } satisfies WorkerToBroadcaster),
+    );
+  } catch { /* broadcaster gone */ }
+}
 
 const PIPELINE_TEARDOWN_GRACE_MS = 30_000;
 
@@ -30,9 +43,11 @@ export async function handleViewerMessage(
       const reply: WorkerToViewer = { type: 'joined', lang: msg.lang, sampleRate: 48000 };
       ws.send(JSON.stringify(reply));
 
-      console.log(`[viewer] joined event=${state.eventId} lang=${msg.lang} total=${state.viewers.get(msg.lang)!.size}`);
+      const viewerCount = state.viewers.get(msg.lang)!.size;
+      console.log(`[viewer] joined event=${state.eventId} lang=${msg.lang} total=${viewerCount}`);
 
-      // Phase 3: start language pipeline if not already running
+      ensureTtsPipeline(state, msg.lang, viewerCount);
+      notifyBroadcasterListenerStats(state);
       break;
     }
 
@@ -55,7 +70,10 @@ export async function handleViewerMessage(
       const reply: WorkerToViewer = { type: 'joined', lang: msg.lang, sampleRate: 48000 };
       ws.send(JSON.stringify(reply));
 
+      const viewerCount = state.viewers.get(msg.lang)!.size;
       console.log(`[viewer] switched event=${eventId} ${oldLang}→${msg.lang}`);
+      ensureTtsPipeline(state, msg.lang, viewerCount);
+      notifyBroadcasterListenerStats(state);
       break;
     }
 
@@ -82,23 +100,27 @@ export async function removeViewer(
     const remaining = viewerSet.size;
 
     console.log(`[viewer] left event=${eventId} lang=${lang} remaining=${remaining}`);
+    notifyBroadcasterListenerStats(state);
 
     if (remaining === 0) {
-      scheduleLanguagePipelineTeardown(eventId, lang);
+      scheduleLanguagePipelineTeardown(state, lang);
     }
   }
 }
 
-function scheduleLanguagePipelineTeardown(eventId: string, lang: string): void {
-  // Phase 3: this will tear down the TTS pipeline after grace period
-  // For now, just log
-  setTimeout(() => {
-    const state = events.get(eventId);
-    if (!state) return;
-    const viewerCount = state.viewers.get(lang)?.size ?? 0;
+
+function scheduleLanguagePipelineTeardown(state: EventState, lang: string): void {
+  const pipeline = state.pipelines.get(lang);
+  if (!pipeline) return;
+
+  pipeline.teardownTimer = setTimeout(() => {
+    const current = events.get(state.eventId);
+    if (!current) return;
+    const viewerCount = current.viewers.get(lang)?.size ?? 0;
     if (viewerCount === 0) {
-      console.log(`[pipeline] teardown lang=${lang} event=${eventId} (grace period elapsed)`);
-      state.pipelines.delete(lang);
+      console.log(`[pipeline] teardown lang=${lang} event=${state.eventId} peak=${pipeline.peakListeners}`);
+      closeTtsPipeline(pipeline);
+      current.pipelines.delete(lang);
     }
   }, PIPELINE_TEARDOWN_GRACE_MS);
 }

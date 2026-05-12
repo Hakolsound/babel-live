@@ -113,6 +113,7 @@ export function EventQR({ url, eventCode, eventTitle }: EventQRProps) {
               size="sm"
               onClick={handleDownload}
               className="w-full gap-2 border-black/15 hover:border-black text-sm"
+              style={{ color: "black" }}
             >
               <Download className="h-3.5 w-3.5" />
               Download SVG

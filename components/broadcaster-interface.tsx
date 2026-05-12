@@ -428,6 +428,8 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   const [activeSection, setActiveSection] = useState<NavSection>("setup");
   const [micPinned, setMicPinned] = useState(false);
   const [knowledgeTab, setKnowledgeTab] = useState<KnowledgeTab>("knowledge");
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const confirmEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sequenceNumberRef = useRef(0);
   const eventStartRef = useRef<number>(0);
@@ -601,7 +603,19 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
     }
   };
 
-  const handleStopRecording = () => {
+  const handleRequestEnd = useCallback(() => {
+    if (!confirmEnd) {
+      setConfirmEnd(true);
+      confirmEndTimerRef.current = setTimeout(() => setConfirmEnd(false), 5000);
+    } else {
+      if (confirmEndTimerRef.current) clearTimeout(confirmEndTimerRef.current);
+      setConfirmEnd(false);
+      handleStopRecording();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmEnd]);
+
+  function handleStopRecording() {
     scribe.disconnect();
     workerClientRef.current?.end();
     workerClientRef.current = null;
@@ -610,7 +624,8 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
     setWorkerConnected(false);
     setShowExport(true);
     setMicPinned(false);
-  };
+    setConfirmEnd(false);
+  }
 
   const handleExportTranscripts = async () => {
     setExportingTranscripts(true);
@@ -784,9 +799,32 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
             <Mic className="h-3.5 w-3.5" />
             Go Live
           </button>
+        ) : confirmEnd ? (
+          <div className="flex items-center gap-2 shrink-0">
+            {totalListeners > 0 && (
+              <span className="text-[11px] font-medium" style={{ color: "rgba(245,158,11,0.85)" }}>
+                {totalListeners} viewer{totalListeners !== 1 ? "s" : ""} connected
+              </span>
+            )}
+            <button
+              onClick={handleRequestEnd}
+              className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all active:scale-[0.98] animate-pulse"
+              style={{ background: "#dc2626", color: "white" }}
+            >
+              <MicOff className="h-3.5 w-3.5" />
+              {totalListeners > 0 ? "End anyway" : "Confirm end"}
+            </button>
+            <button
+              onClick={() => { if (confirmEndTimerRef.current) clearTimeout(confirmEndTimerRef.current); setConfirmEnd(false); }}
+              className="h-8 px-3 rounded-lg text-sm transition-all hover:bg-white/[0.06]"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+            >
+              Cancel
+            </button>
+          </div>
         ) : (
           <button
-            onClick={handleStopRecording}
+            onClick={handleRequestEnd}
             className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all active:scale-[0.98] shrink-0"
             style={{ background: "#dc2626", color: "white" }}
           >
@@ -952,12 +990,38 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                     {selectedSourceLang ? langName(selectedSourceLang) : "Auto-detect"}
                   </p>
                 </div>
-                <div className="[&_button]:bg-white/5 [&_button]:border-white/10 [&_button]:text-white/70 [&_button:hover]:bg-white/[0.08]">
-                  <LanguageSelector value={selectedSourceLang} onValueChange={setSelectedSourceLang} />
-                </div>
-                <p className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
-                  Leave blank to auto-detect the speaker's language
-                </p>
+                {selectedSourceLang && (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => !isRecording && setSelectedSourceLang(null)}
+                      disabled={isRecording}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                      style={{
+                        background: "rgba(255,255,255,0.07)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        color: "rgba(255,255,255,0.7)",
+                      }}
+                    >
+                      <span className="font-mono">{selectedSourceLang.toUpperCase()}</span>
+                      <span style={{ color: "rgba(255,255,255,0.4)" }}>{langName(selectedSourceLang)}</span>
+                      {!isRecording && <span style={{ color: "rgba(255,255,255,0.25)" }}>×</span>}
+                    </button>
+                  </div>
+                )}
+                {!isRecording && (
+                  <div className="[&_button]:bg-white/5 [&_button]:border-white/10 [&_button]:text-white/70 [&_button:hover]:bg-white/[0.08]">
+                    <LanguageSelector
+                      value={null}
+                      onValueChange={(lang) => setSelectedSourceLang(lang)}
+                      defaultOption={{ value: null, label: selectedSourceLang ? "Change language…" : "Auto-detect (blank)" }}
+                    />
+                  </div>
+                )}
+                {!selectedSourceLang && !isRecording && (
+                  <p className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}>
+                    Leave blank to auto-detect the speaker's language
+                  </p>
+                )}
               </div>
 
               {/* Translate To */}
@@ -1199,16 +1263,53 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                 )}
               </div>
 
-              {/* Active mic reminder */}
-              {isRecording && (
-                <div
-                  className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-                  style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.28)" }}
-                >
-                  <Mic className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{selectedDeviceLabel}</span>
+              {/* Connection health + session stats */}
+              <div
+                className="rounded-xl px-4 py-3 space-y-3"
+                style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)" }}
+              >
+                <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.18)" }}>
+                  Session
+                </p>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${workerConnected ? "bg-emerald-400" : "bg-white/20"}`} />
+                    <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>Worker</span>
+                    <span className="text-[11px] font-medium ml-auto" style={{ color: workerConnected ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.2)" }}>
+                      {workerConnected ? "Connected" : "Offline"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${scribe.isConnected ? "bg-emerald-400 animate-pulse" : "bg-white/20"}`} />
+                    <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>Mic / STT</span>
+                    <span className="text-[11px] font-medium ml-auto" style={{ color: scribe.isConnected ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.2)" }}>
+                      {scribe.isConnected ? "Live" : "Off"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Mic className="h-3 w-3 shrink-0" style={{ color: "rgba(255,255,255,0.25)" }} />
+                    <span className="text-[11px] truncate" style={{ color: "rgba(255,255,255,0.4)" }}>Input</span>
+                    <span className="text-[11px] font-medium ml-auto truncate max-w-[120px]" style={{ color: "rgba(255,255,255,0.55)" }}>
+                      {selectedDeviceLabel}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>Segments</span>
+                    <span className="text-[11px] font-mono font-medium ml-auto" style={{ color: "rgba(255,255,255,0.55)" }}>
+                      {committedCount}
+                    </span>
+                  </div>
+                  {detectedLanguage && (
+                    <div className="flex items-center gap-2 col-span-2">
+                      <Languages className="h-3 w-3 shrink-0" style={{ color: "rgba(255,255,255,0.25)" }} />
+                      <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>Detected</span>
+                      <span className="text-[11px] font-mono font-medium ml-auto" style={{ color: "rgba(255,255,255,0.55)" }}>
+                        {detectedLanguage.toUpperCase()}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
 
