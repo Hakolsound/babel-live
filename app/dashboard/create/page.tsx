@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { getSupabaseServerClient } from "@/lib/supabase/server"
-import { CreateEventForm } from "@/components/create-event-form"
+import { CreateEventWizard } from "@/components/create-event-wizard"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Captions } from "lucide-react"
 import Link from "next/link"
@@ -23,7 +23,7 @@ export default async function CreateEventPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Captions className="h-6 w-6 text-primary" />
-            <span className="font-bold text-xl">TODO_BRAND</span>
+            <span className="font-bold text-xl">Babel</span>
           </div>
           <Button variant="ghost" asChild>
             <Link href="/dashboard">
@@ -39,9 +39,9 @@ export default async function CreateEventPage() {
         <div className="max-w-2xl mx-auto">
           <div className="mb-8">
             <h1 className="text-3xl font-bold">Create New Event</h1>
-            <p className="text-muted-foreground mt-1">Set up a new live caption event for your audience</p>
+            <p className="text-muted-foreground mt-1">Set up languages and knowledge base before going live</p>
           </div>
-          <CreateEventForm userId={user.id} />
+          <CreateEventWizard userId={user.id} />
         </div>
       </main>
     </div>

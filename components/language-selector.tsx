@@ -29,6 +29,8 @@ interface LanguageSelectorProps {
   onValueChange: (code: string | null) => void;
   disabled?: boolean;
   defaultOption?: DefaultOption;
+  /** If provided, only these language codes are shown in the list */
+  languages?: string[];
 }
 
 export function LanguageSelector({
@@ -36,7 +38,11 @@ export function LanguageSelector({
   onValueChange,
   disabled = false,
   defaultOption = { value: null, label: "Auto-detect" },
+  languages,
 }: LanguageSelectorProps) {
+  const visibleLanguages = languages
+    ? LANGUAGES.filter((l) => languages.includes(l.code))
+    : LANGUAGES;
   const [open, setOpen] = useState(false);
 
   const selectedName = value
@@ -76,7 +82,7 @@ export function LanguageSelector({
                 <Globe className="mr-2 h-4 w-4" />
                 {defaultOption.label}
               </CommandItem>
-              {LANGUAGES.map((language) => (
+              {visibleLanguages.map((language) => (
                 <CommandItem
                   key={language.code}
                   value={`${language.name} ${language.code}`}

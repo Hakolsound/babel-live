@@ -80,3 +80,14 @@ CREATE POLICY "transcript_entries_insert_owner"
 
 -- Enable Supabase Realtime (viewer caption sidecar in Phase 5)
 ALTER PUBLICATION supabase_realtime ADD TABLE transcript_entries;
+
+-- ─── 4. Knowledge base extensions ────────────────────────────────────────────
+
+ALTER TABLE events
+  ADD COLUMN IF NOT EXISTS organization               text,
+  ADD COLUMN IF NOT EXISTS knowledge_domain           text,
+  ADD COLUMN IF NOT EXISTS knowledge_subdomain        text,
+  ADD COLUMN IF NOT EXISTS knowledge_specialty        text,
+  ADD COLUMN IF NOT EXISTS knowledge_briefing         text,
+  ADD COLUMN IF NOT EXISTS knowledge_keyterms         text[],
+  ADD COLUMN IF NOT EXISTS knowledge_term_translations jsonb;

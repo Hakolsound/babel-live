@@ -31,7 +31,7 @@ export default async function DashboardPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Captions className="h-6 w-6 text-primary" />
-            <span className="font-bold text-xl">TODO_BRAND</span>
+            <span className="font-bold text-xl">Babel</span>
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground hidden sm:inline">{user.email}</span>

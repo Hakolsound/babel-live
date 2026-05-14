@@ -1,0 +1,18 @@
+Good morning everyone. Today I want to talk about the future of machine learning in clinical diagnostics.
+Let me start with a quick introduction. I'm a researcher at the Weizmann Institute, and I've spent the last five years working on this problem.
+The core challenge we're addressing is diagnostic accuracy at scale. When a radiologist examines an MRI scan, they bring decades of experience to the table.
+But what happens when that radiologist is fatigued, or when they're working in a low-resource setting without access to experienced colleagues?
+This is exactly where deep learning becomes valuable. We've built a system called MedVision that can analyze these scans with accuracy comparable to a board-certified radiologist.
+Now I want to be very clear about what this system is, and what it isn't. It is not a replacement for human judgment.
+Think of it as a second pair of eyes — a very fast, very consistent second pair of eyes that never gets tired and never has a bad day.
+The model was trained on 1.2 million annotated scans collected from 47 hospitals across three continents.
+That geographic and equipment diversity in the training data is absolutely critical. A model trained only on data from a single institution tends to latch on to that hospital's imaging artifacts rather than the true pathological features we care about.
+We call this failure mode "shortcut learning," and it's one of the most dangerous problems in medical AI today.
+In our independent validation cohort, MedVision detected early-stage glioblastoma with 94% sensitivity and 91% specificity.
+For context, the human radiologist baseline in that same cohort was 89% sensitivity and 93% specificity.
+So our system outperforms on sensitivity but is slightly behind on specificity. What does that tradeoff mean in a real clinical setting?
+It means we catch more cases, but we also flag more false positives that require follow-up. For a first-pass screening tool, that is an acceptable and even desirable tradeoff.
+Looking ahead, we plan to integrate MedVision into the clinical workflow at three partner hospitals starting in the third quarter of this year.
+The integration is intentionally non-disruptive — it surfaces as a soft alert inside the PACS system that radiologists already use every day.
+We're not asking anyone to change their workflow. We're just adding a quiet, reliable colleague to the reading room.
+Thank you. I'll now hand it over to my colleague Dr. Cohen, who will walk you through the regulatory pathway we're pursuing.

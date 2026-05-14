@@ -19,6 +19,7 @@ interface CreateEventFormProps {
 
 export function CreateEventForm({ userId }: CreateEventFormProps) {
   const [title, setTitle] = useState("")
+  const [organization, setOrganization] = useState("")
   const [description, setDescription] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -38,9 +39,11 @@ export function CreateEventForm({ userId }: CreateEventFormProps) {
       .insert({
         uid,
         title,
+        organization: organization || null,
         description,
         creator_id: userId,
         event_code,
+        tts_enabled: true,
       })
       .select()
       .single()
@@ -66,10 +69,20 @@ export function CreateEventForm({ userId }: CreateEventFormProps) {
             <Label htmlFor="title">Event Title</Label>
             <Input
               id="title"
-              placeholder="e.g., Tech Conference 2025"
+              placeholder="e.g., Annual Dermatology Summit 2025"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               required
+              disabled={loading}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="organization">Organization (optional)</Label>
+            <Input
+              id="organization"
+              placeholder="e.g., Israeli Dermatology Society"
+              value={organization}
+              onChange={(e) => setOrganization(e.target.value)}
               disabled={loading}
             />
           </div>

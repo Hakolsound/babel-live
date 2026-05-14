@@ -14,24 +14,24 @@ export default async function ViewerPage({ params, searchParams }: ViewerPagePro
 
   const { data: event, error } = await supabase
     .from("events")
-    .select("id, uid, title, description, event_code, source_language, target_languages, tts_enabled")
+    .select("id, uid, title, description, event_code, source_language, target_languages, tts_enabled, fly_region")
     .eq("event_code", code.toUpperCase())
     .single()
 
   if (error || !event) notFound()
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-      <header className="border-b bg-background/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-xl">TODO_BRAND</span>
-            <span className="text-sm text-muted-foreground font-mono">{event.event_code}</span>
-          </div>
-        </div>
+    <div className="min-h-screen bg-white text-black flex flex-col">
+      {/* Minimal header */}
+      <header className="flex items-center justify-between px-5 py-4 border-b border-black/10">
+        <span className="font-black text-lg tracking-tight">BABEL</span>
+        <span className="font-mono text-sm font-bold tracking-widest text-black/40">
+          {event.event_code}
+        </span>
       </header>
 
-      <main className="container mx-auto px-4 py-8">
+      {/* Full-height viewer */}
+      <main className="flex-1 flex flex-col">
         <TranslatedViewer event={event} initialLang={lang ?? null} />
       </main>
     </div>

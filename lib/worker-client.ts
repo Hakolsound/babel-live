@@ -1,8 +1,8 @@
-import type { BroadcasterUp, WorkerToBroadcaster } from '@/lib/worker-types';
+import type { BroadcasterUp, WorkerToBroadcaster, EventKnowledge } from '@/lib/worker-types';
 
 export type WorkerClientHandlers = {
   onReady: () => void;
-  onTranscript: (lang: string, text: string, final: boolean, ts: number) => void;
+  onTranscript: (lang: string, text: string, final: boolean, ts: number, sentAt?: number) => void;
   onListenerStats: (counts: Record<string, number>) => void;
   onError: (code: string, message: string) => void;
   onDisconnected: () => void;
@@ -25,8 +25,8 @@ export class WorkerClient {
     this.handlers = handlers;
   }
 
-  connect(eventId: string, sourceLang: string, targetLangs: string[]): void {
-    this.pendingHello = { type: 'hello', eventId, sourceLang, targetLangs };
+  connect(eventId: string, sourceLang: string, targetLangs: string[], knowledge?: EventKnowledge): void {
+    this.pendingHello = { type: 'hello', eventId, sourceLang, targetLangs, knowledge };
     this.destroyed = false;
     this.openSocket();
   }
@@ -64,7 +64,7 @@ export class WorkerClient {
           this.handlers.onReady();
           break;
         case 'transcript':
-          this.handlers.onTranscript(msg.lang, msg.text, msg.final, msg.ts);
+          this.handlers.onTranscript(msg.lang, msg.text, msg.final, msg.ts, msg.sentAt);
           break;
         case 'listener_stats':
           this.handlers.onListenerStats(msg.counts);
@@ -92,11 +92,27 @@ export class WorkerClient {
   }
 
   sendTranscript(lang: string, text: string, final: boolean, ts: number): void {
-    this.send({ type: 'transcript', lang, text, final, ts } as BroadcasterUp);
+    this.send({ type: 'transcript', lang, text, final, ts, sentAt: Date.now() } as BroadcasterUp);
+  }
+
+  sendPartialTranscript(lang: string, text: string, ts: number): void {
+    this.send({ type: 'transcript', lang, text, final: false, ts } as BroadcasterUp);
   }
 
   updateTargets(targetLangs: string[]): void {
     this.send({ type: 'update_targets', targetLangs });
+  }
+
+  pauseLang(lang: string): void {
+    this.send({ type: 'pause_lang', lang });
+  }
+
+  resumeLang(lang: string): void {
+    this.send({ type: 'resume_lang', lang });
+  }
+
+  updateGlossary(glossary: Record<string, string>): void {
+    this.send({ type: 'update_glossary', glossary });
   }
 
   end(): void {
