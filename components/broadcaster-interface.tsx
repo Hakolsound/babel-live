@@ -57,8 +57,37 @@ type KnowledgeTab = "knowledge" | "glossary";
 const MAX_MONITOR_LINES = 8;
 const MAX_LATENCY_POINTS = 60;
 
+// Returns the part of `committed` that was NOT already sent via self-commits.
+// Uses word-level suffix matching so Scribe's text normalization (contractions, case) doesn't fool it.
+function getUntranslatedTail(alreadySent: string, committed: string): string {
+  const sentWords = alreadySent.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const committedWords = committed.trim().split(/\s+/).filter(Boolean);
+  if (sentWords.length === 0) return committed;
+
+  // Try suffix windows of decreasing length (max 8 words) to find where alreadySent ends in committed
+  const maxWindow = Math.min(8, sentWords.length);
+  for (let w = maxWindow; w >= 2; w--) {
+    const suffix = sentWords.slice(-w).join(' ');
+    for (let i = committedWords.length - w; i >= 0; i--) {
+      const window = committedWords.slice(i, i + w).join(' ').toLowerCase();
+      if (window === suffix) {
+        return committedWords.slice(i + w).join(' ');
+      }
+    }
+  }
+
+  // No overlap found — if committed is the same length or shorter, it's fully covered
+  if (committedWords.length <= sentWords.length + 3) return '';
+  return committed;
+}
+
 function langName(code: string) {
   return LANGUAGES.find((l) => l.code === code)?.name ?? code.toUpperCase();
+}
+
+const RTL_LANGS = new Set(['he', 'ar', 'fa', 'ur', 'yi', 'dv']);
+function isRtlLang(lang: string): boolean {
+  return RTL_LANGS.has(lang.split('-')[0] ?? '');
 }
 
 // ── Health dot ────────────────────────────────────────────────────────────────
@@ -164,7 +193,12 @@ function LangFeed({
           <p className="text-white/20 text-xs italic">Waiting for translations…</p>
         ) : (
           lines.map((l, i) => (
-            <p key={i} className={`text-sm leading-snug ${i === lines.length - 1 ? "text-white/90" : "text-white/35"}`}>
+            <p
+              key={i}
+              className={`text-sm leading-snug ${i === lines.length - 1 ? "text-white/90" : "text-white/35"}`}
+              dir={isRtlLang(lang) ? 'rtl' : 'ltr'}
+              style={{ textAlign: isRtlLang(lang) ? 'right' : 'left' }}
+            >
               {l.text}
             </p>
           ))
@@ -382,6 +416,171 @@ function Divider() {
   return <div className="w-full h-px my-1" style={{ background: "rgba(255,255,255,0.06)" }} />;
 }
 
+// ── Input level meter ─────────────────────────────────────────────────────────
+const METER_MIN_DB = -60;
+const METER_TOO_LOW_DB = -42;
+const METER_WARN_DB = -12;
+const METER_CLIP_DB = -3;
+const ALERT_LATCH_MS = 3000;
+
+function InputMeter({ deviceId, active }: { deviceId: string; active: boolean }) {
+  const [dbfs, setDbfs] = useState<number>(METER_MIN_DB);
+  const [peakDb, setPeakDb] = useState<number>(METER_MIN_DB);
+  const [tooLowLatched, setTooLowLatched] = useState(false);
+  const [clippingLatched, setClippingLatched] = useState(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const peakRef = useRef<number>(METER_MIN_DB);
+  const lastTickMsRef = useRef<number>(0);
+  const tooLowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clippingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!active || !deviceId) return;
+    let cancelled = false;
+
+    async function setup() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const ctx = new AudioContext();
+        audioCtxRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+        peakRef.current = METER_MIN_DB;
+        lastTickMsRef.current = performance.now();
+        const buf = new Float32Array(analyser.fftSize);
+        const tick = (now: number) => {
+          analyser.getFloatTimeDomainData(buf);
+          let sumSq = 0;
+          for (let i = 0; i < buf.length; i++) sumSq += (buf[i] ?? 0) * (buf[i] ?? 0);
+          const rms = Math.sqrt(sumSq / buf.length);
+          const instant = Math.max(rms > 0 ? 20 * Math.log10(rms) : -Infinity, METER_MIN_DB);
+
+          // Peak follower: instant attack, 20 dB/s decay — silences don't reset it
+          const dt = (now - lastTickMsRef.current) / 1000;
+          lastTickMsRef.current = now;
+          peakRef.current = Math.max(instant, peakRef.current - 20 * dt);
+
+          setDbfs(instant);
+          setPeakDb(peakRef.current);
+          rafRef.current = requestAnimationFrame(tick);
+        };
+        rafRef.current = requestAnimationFrame(tick);
+      } catch { /* mic access denied */ }
+    }
+    setup();
+
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      audioCtxRef.current?.close();
+      streamRef.current = null; audioCtxRef.current = null; analyserRef.current = null;
+      setDbfs(METER_MIN_DB); setPeakDb(METER_MIN_DB);
+    };
+  }, [active, deviceId]);
+
+  // TOO LOW: latch based on peak (ignores inter-word silences)
+  useEffect(() => {
+    if (!active) return;
+    // Only consider "speech present" range: peak above noise floor but not silence
+    if (peakDb > METER_MIN_DB + 10 && peakDb < METER_TOO_LOW_DB) {
+      setTooLowLatched(true);
+      if (tooLowTimerRef.current) clearTimeout(tooLowTimerRef.current);
+      tooLowTimerRef.current = setTimeout(() => setTooLowLatched(false), ALERT_LATCH_MS);
+    }
+  }, [active, peakDb]);
+
+  // CLIPPING: instantaneous — reacts immediately
+  useEffect(() => {
+    if (!active) return;
+    if (dbfs > METER_CLIP_DB) {
+      setClippingLatched(true);
+      if (clippingTimerRef.current) clearTimeout(clippingTimerRef.current);
+      clippingTimerRef.current = setTimeout(() => setClippingLatched(false), ALERT_LATCH_MS);
+    }
+  }, [active, dbfs]);
+
+  useEffect(() => () => {
+    if (tooLowTimerRef.current) clearTimeout(tooLowTimerRef.current);
+    if (clippingTimerRef.current) clearTimeout(clippingTimerRef.current);
+  }, []);
+
+  const range = -METER_MIN_DB;
+  const normalized = Math.max(0, Math.min(1, (dbfs - METER_MIN_DB) / range));
+  const clipping = active && dbfs > METER_CLIP_DB;
+  const warn = active && !clipping && dbfs > METER_WARN_DB;
+  const tooLow = active && peakDb > METER_MIN_DB + 10 && peakDb < METER_TOO_LOW_DB;
+
+  let barColor = "rgba(52,211,153,0.85)";
+  if (!active || dbfs <= METER_MIN_DB) barColor = "rgba(255,255,255,0.06)";
+  else if (tooLow) barColor = "rgba(245,158,11,0.55)";
+  else if (clipping) barColor = "rgba(239,68,68,0.9)";
+  else if (warn) barColor = "rgba(251,191,36,0.8)";
+
+  const tooLowPos = (METER_TOO_LOW_DB - METER_MIN_DB) / range;
+  const clipPos = (METER_CLIP_DB - METER_MIN_DB) / range;
+
+  return (
+    <div className="space-y-2 px-1">
+      {/* Alert pills row — float above the bar */}
+      <div className="flex items-center gap-2 h-5">
+        <p className="text-[9px] font-bold tracking-[0.18em] uppercase shrink-0" style={{ color: "rgba(255,255,255,0.18)" }}>
+          Input
+        </p>
+        {tooLowLatched && (
+          <span
+            className="text-[9px] font-bold px-2 py-px rounded-full"
+            style={{
+              background: "rgba(245,158,11,0.12)",
+              color: "rgba(245,158,11,0.9)",
+              border: "1px solid rgba(245,158,11,0.25)",
+              boxShadow: tooLow ? "0 0 8px rgba(245,158,11,0.25)" : "none",
+              transition: "box-shadow 0.3s",
+            }}
+          >
+            TOO LOW
+          </span>
+        )}
+        {clippingLatched && (
+          <span
+            className={`text-[9px] font-bold px-2 py-px rounded-full ${clipping ? "animate-pulse" : ""}`}
+            style={{
+              background: "rgba(239,68,68,0.14)",
+              color: "rgba(239,68,68,0.95)",
+              border: "1px solid rgba(239,68,68,0.3)",
+              boxShadow: clipping ? "0 0 8px rgba(239,68,68,0.3)" : "none",
+              transition: "box-shadow 0.3s",
+            }}
+          >
+            CLIPPING
+          </span>
+        )}
+        <span className="ml-auto text-[9px] font-mono tabular-nums shrink-0" style={{ color: "rgba(255,255,255,0.2)", minWidth: "44px", textAlign: "right" }}>
+          {active && dbfs > METER_MIN_DB ? `${dbfs.toFixed(1)} dB` : "— dB"}
+        </span>
+      </div>
+
+      {/* Bar */}
+      <div className="relative flex-1 h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.05)" }}>
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${normalized * 100}%`, background: barColor, transition: "width 60ms linear, background 150ms" }}
+        />
+        <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${tooLowPos * 100}%`, background: "rgba(255,255,255,0.1)" }} />
+        <div className="absolute top-0 bottom-0 w-px pointer-events-none" style={{ left: `${clipPos * 100}%`, background: "rgba(255,255,255,0.1)" }} />
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceProps) {
   const [copied, setCopied] = useState(false);
@@ -434,6 +633,16 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   const sequenceNumberRef = useRef(0);
   const eventStartRef = useRef<number>(0);
   const workerClientRef = useRef<WorkerClient | null>(null);
+  // Self-commit: fire every SELF_COMMIT_MS after the first word, sending only the delta
+  // since the last commit. Resets when Scribe makes a real commit.
+  const SELF_COMMIT_MS = 2500;
+  const selfCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentPartialRef = useRef<string>('');
+  const currentPartialLangRef = useRef<string>('source');
+  const lastSelfCommitOffsetRef = useRef<number>(0);
+  // Accumulates all self-committed deltas since the last Scribe commit — used to
+  // subtract already-translated content from the Scribe commit so we don't double-translate.
+  const selfCommittedAccumRef = useRef<string>('');
   const supabase = getSupabaseBrowserClient();
   const broadcastChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const languageDetectorRef = useRef<LanguageDetector | null>(null);
@@ -502,15 +711,59 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
         type: "broadcast", event: "partial_transcript",
         payload: { text: data.text, language_code: detectedLang },
       });
+
+      // Self-commit: fire every SELF_COMMIT_MS from the first new word.
+      // Sends only the delta since last self-commit (no overlap with prior segments).
+      currentPartialRef.current = data.text;
+      currentPartialLangRef.current = detectedLang ?? selectedSourceLang ?? "source";
+      if (!selfCommitTimerRef.current && data.text.trim().split(/\s+/).length >= 4) {
+        const scheduleNext = () => {
+          selfCommitTimerRef.current = setTimeout(() => {
+            selfCommitTimerRef.current = null;
+            const partial = currentPartialRef.current.trim();
+            const delta = partial.slice(lastSelfCommitOffsetRef.current).trim();
+            if (delta.split(/\s+/).length >= 4 && workerClientRef.current) {
+              lastSelfCommitOffsetRef.current = partial.length;
+              const ts = Date.now() - eventStartRef.current;
+              workerClientRef.current.sendTranscript(currentPartialLangRef.current, delta, true, ts);
+              selfCommittedAccumRef.current += (selfCommittedAccumRef.current ? ' ' : '') + delta;
+              console.log('[self-commit] delta →', delta.slice(0, 60));
+            }
+            if (currentPartialRef.current.trim().length > lastSelfCommitOffsetRef.current) {
+              scheduleNext();
+            }
+          }, SELF_COMMIT_MS);
+        };
+        scheduleNext();
+      }
     },
     onCommittedTranscript: async (data) => {
+      // Cancel pending self-commit timer — real commit takes over
+      if (selfCommitTimerRef.current) {
+        clearTimeout(selfCommitTimerRef.current);
+        selfCommitTimerRef.current = null;
+      }
+      const alreadySent = selfCommittedAccumRef.current.trim();
+      currentPartialRef.current = '';
+      lastSelfCommitOffsetRef.current = 0;
+      selfCommittedAccumRef.current = '';
       setPartialText("");
       setCommittedCount((n) => n + 1);
       const detectedLang = await detectLanguage(data.text);
       if (detectedLang) setDetectedLanguage(detectedLang);
       const langCode = detectedLang ?? selectedSourceLang ?? "source";
       const ts = Date.now() - eventStartRef.current;
-      workerClientRef.current?.sendTranscript(langCode, data.text, true, ts);
+
+      // Strip the portion already sent via self-commits — only send the new tail.
+      // Word-level matching: find where alreadySent ends within committed, send the remainder.
+      const committed = data.text.trim();
+      let toSend = committed;
+      if (alreadySent.length > 0) {
+        toSend = getUntranslatedTail(alreadySent, committed);
+      }
+      if (toSend.split(/\s+/).filter(Boolean).length >= 2) {
+        workerClientRef.current?.sendTranscript(langCode, toSend, true, ts);
+      }
       try {
         const { data: inserted, error: insertError } = await supabase
           .from("captions")
@@ -574,6 +827,11 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
       setShowExport(false);
       setActiveSection("monitor");
 
+      // Sync language config to DB so the viewer page sees the current selection
+      await supabase.from("events")
+        .update({ source_language: selectedSourceLang ?? "auto", target_languages: targetLangs })
+        .eq("id", event.id);
+
       const worker = new WorkerClient({
         onReady: () => setWorkerConnected(true),
         onTranscript: (lang, text, _final, _ts, sentAt) => addTranslatedLine(lang, text, sentAt),
@@ -616,6 +874,23 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   }, [confirmEnd]);
 
   function handleStopRecording() {
+    if (selfCommitTimerRef.current) {
+      clearTimeout(selfCommitTimerRef.current);
+      selfCommitTimerRef.current = null;
+    }
+    currentPartialRef.current = '';
+    lastSelfCommitOffsetRef.current = 0;
+    selfCommittedAccumRef.current = '';
+
+    // Scribe's audio worklet keeps flushing frames after disconnect() for ~1-2s.
+    // The Scribe library throws "WebSocket is not connected" for each one — suppress
+    // those errors during the cleanup window so the console stays clean.
+    const suppressScribeCleanupErrors = (e: ErrorEvent) => {
+      if (e.message === 'WebSocket is not connected') e.preventDefault();
+    };
+    window.addEventListener('error', suppressScribeCleanupErrors);
+    setTimeout(() => window.removeEventListener('error', suppressScribeCleanupErrors), 3000);
+
     scribe.disconnect();
     workerClientRef.current?.end();
     workerClientRef.current = null;
@@ -1310,6 +1585,10 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                   )}
                 </div>
               </div>
+
+              {/* Input level meter */}
+              <InputMeter deviceId={selectedDeviceId} active={isRecording} />
+
             </div>
           )}
 
