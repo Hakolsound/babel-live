@@ -123,7 +123,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const [selectedLang, setSelectedLang] = useState<string | null>(defaultLang)
   const [viewerMode, setViewerModeState] = useState<ViewerMode>(() => loadMode(event.tts_enabled))
 
-  // Audio support is unknown until useEffect runs (SSR has no AudioContext/AudioDecoder)
   const [audioSupport, setAudioSupport] = useState<AudioSupportResult>({ supported: false })
   const [audioSupportChecked, setAudioSupportChecked] = useState(false)
 
@@ -139,16 +138,15 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const [suggestedLang, setSuggestedLang] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const activeLineRef = useRef<HTMLParagraphElement | null>(null)
   const clientRef = useRef<ViewerClient | null>(null)
   const playerRef = useRef<AudioPlayer | null>(null)
   const currentLang = useRef<string | null>(null)
 
-  // Detect audio support client-side only — must be in useEffect, never SSR
   useEffect(() => {
     const result = checkAudioSupport()
     setAudioSupport(result)
     setAudioSupportChecked(true)
-    console.log('[viewer] audio support:', result)
   }, [])
 
   const setViewerMode = useCallback((mode: ViewerMode) => {
@@ -156,7 +154,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     localStorage.setItem('babel_viewer_mode', mode)
   }, [])
 
-  // Detect browser language preference on mount
   useEffect(() => {
     const candidates = [
       ...(navigator.languages ?? []),
@@ -194,7 +191,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
       }
       return
     }
-    // partial or stable
     setIsLive(true)
     setStreaming({ utteranceId, text, stability, seq: caption.seq })
   }, [])
@@ -215,12 +211,9 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
       try {
         player = await AudioPlayer.create(48000)
         playerRef.current = player
-        console.log('[viewer] AudioPlayer ready')
       } catch (err) {
         console.error('[viewer] AudioPlayer.create failed', err)
       }
-    } else {
-      console.log(`[viewer] audio skipped tts=${event.tts_enabled} supported=${audioSupport.supported} mode=${mode}`)
     }
 
     const client = new ViewerClient(workerUrl, {
@@ -248,9 +241,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     client.join(event.event_code, lang, mode)
   }, [event.tts_enabled, event.event_code, event.fly_region, audioSupport.supported, handleCaption])
 
-  // Gate: wait until audio support is known before auto-unlocking or showing gate.
-  // Without this, SSR would always see audioSupport.supported=false and auto-unlock
-  // before the client has had a chance to check, connecting without audio.
   const needsAudioUnlock = audioSupportChecked
     && event.tts_enabled && audioSupport.supported
     && viewerMode !== 'captions_only' && !!event.event_code
@@ -274,7 +264,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     }
   }, [selectedLang, startViewer, viewerMode])
 
-  // Connect/reconnect on lang or mode change (only once audio-support is known)
   useEffect(() => {
     if (!selectedLang || !audioUnlocked) return
     if (currentLang.current === selectedLang) return
@@ -288,7 +277,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     startViewer(selectedLang, viewerMode).catch(console.error)
   }, [selectedLang, audioUnlocked, startViewer, viewerMode])
 
-  // Poll reconnect when broadcast not yet live
   useEffect(() => {
     if (!broadcastNotLive || !audioUnlocked || !selectedLang) return
     const timer = setTimeout(() => {
@@ -304,7 +292,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     return () => { clientRef.current?.destroy(); playerRef.current?.destroy() }
   }, [])
 
-  // Clear transcript on lang change
   useEffect(() => {
     setEntries([])
     setStreaming(null)
@@ -327,11 +314,15 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const activeTarget = streaming?.text ?? lastEntry?.text ?? ''
   const displayedText = useTypewriter(activeTarget, typewriterResetKey)
 
-  // Auto-scroll to bottom on every new character or entry
+  // ── Scroll: keep active line at viewport center ────────────────────────────
+  // Fires only on utterance boundaries (not per character) to avoid jitter
   useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [displayedText, entries.length])
+    const container = scrollRef.current
+    const activeLine = activeLineRef.current
+    if (!container || !activeLine) return
+    const ideal = activeLine.offsetTop - container.clientHeight / 2 + activeLine.clientHeight / 2
+    container.scrollTop = Math.max(0, ideal)
+  }, [entries.length, streaming?.utteranceId])
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
@@ -344,8 +335,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const hasContent = entries.length > 0 || isStreaming
   const isMinimized = isLive && hasContent
 
-  // History = all committed entries except the last when not streaming
-  // (last committed shown as active via typewriter)
+  // History = all committed except the last when not streaming
   const historyEntries = isStreaming ? entries : entries.slice(0, -1)
 
   // ── Phase: language pick ───────────────────────────────────────────────────
@@ -490,31 +480,43 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
         </div>
       )}
 
-      {/* Scrollable transcript — all entries accumulate, current at bottom */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="min-h-full flex flex-col justify-end px-5 pb-8 pt-6" dir={isRtl ? 'rtl' : 'ltr'}>
+      {/* Transcript: top-anchored, auto-scrolls so active line stays at 50% */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-scroll"
+        style={{
+          scrollbarWidth: 'none',
+          // Fade history entries as they approach the top of the visible area
+          WebkitMaskImage: hasContent
+            ? 'linear-gradient(to bottom, transparent 0%, black 22%, black 100%)'
+            : undefined,
+          maskImage: hasContent
+            ? 'linear-gradient(to bottom, transparent 0%, black 22%, black 100%)'
+            : undefined,
+        }}
+      >
+        <div className="px-5 pt-6" dir={isRtl ? 'rtl' : 'ltr'}>
 
           {!hasContent && !broadcastNotLive && (
-            <p className="text-center text-black/20 text-sm">Waiting for the broadcast to start…</p>
+            <p className="text-center text-black/20 text-sm pt-8">Waiting for the broadcast to start…</p>
           )}
           {broadcastNotLive && !hasContent && (
-            <p className="text-center text-black/20 text-sm">Broadcast hasn't started — connecting automatically…</p>
+            <p className="text-center text-black/20 text-sm pt-8">Broadcast hasn't started — connecting automatically…</p>
           )}
 
-          {/* All committed history entries */}
+          {/* Committed history — newest nearest center, oldest fades toward top */}
           {historyEntries.map((entry, i) => {
-            // Fade by distance from end: most recent = 0.55, older fade further
             const fromEnd = historyEntries.length - 1 - i
-            const opacity = Math.max(0.12, 0.55 - fromEnd * 0.12)
+            const opacity = Math.max(0.13, 0.58 - fromEnd * 0.10)
             const sizeClass = fromEnd === 0
               ? 'text-xl font-medium'
               : fromEnd === 1
-              ? 'text-base font-normal'
-              : 'text-sm font-normal'
+              ? 'text-lg font-normal'
+              : 'text-base font-normal'
             return (
               <p
                 key={entry.id}
-                className={`${sizeClass} leading-snug mb-3`}
+                className={`${sizeClass} leading-snug mb-4`}
                 style={{ opacity, transition: 'opacity 0.4s ease' }}
               >
                 {entry.text}
@@ -522,20 +524,24 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
             )
           })}
 
-          {/* Active line — typewriter animated, large, always at bottom */}
+          {/* Active line — typewriter animated, locked at viewport center via scroll */}
           {(displayedText.length > 0 || isStreaming || lastEntry) && (
             <p
-              className={`text-[clamp(1.5rem,6vw,2.2rem)] font-semibold leading-snug ${
+              ref={activeLineRef}
+              className={`text-[clamp(1.5rem,6vw,2.2rem)] font-semibold leading-snug mb-4 ${
                 isPartial ? 'text-black/45 italic' : 'text-black'
               }`}
               style={{ transition: 'color 0.2s ease' }}
             >
-              {displayedText || ' '/* keep height stable */}
+              {displayedText || ' '}
               {(isStreaming || displayedText !== activeTarget) && (
                 <span className="text-black/25 animate-pulse"> ▍</span>
               )}
             </p>
           )}
+
+          {/* Spacer: allows the active line to be scrolled to the vertical center */}
+          <div style={{ height: '50vh' }} />
 
         </div>
       </div>
