@@ -756,15 +756,12 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
       const langCode = detectedLang ?? selectedSourceLang ?? "source";
       const ts = Date.now() - eventStartRef.current;
 
-      // Strip the portion already sent via self-commits — only send the new tail.
-      // Word-level matching: find where alreadySent ends within committed, send the remainder.
+      // If we already self-committed any portion of this phrase, skip — the initial
+      // streaming translation is better quality and lower latency than a late re-send.
+      // Only send if nothing was self-committed (short phrases that never triggered the timer).
       const committed = data.text.trim();
-      let toSend = committed;
-      if (alreadySent.length > 0) {
-        toSend = getUntranslatedTail(alreadySent, committed);
-      }
-      if (toSend.split(/\s+/).filter(Boolean).length >= 2) {
-        workerClientRef.current?.sendTranscript(langCode, toSend, true, ts);
+      if (alreadySent.length === 0 && committed.split(/\s+/).filter(Boolean).length >= 2) {
+        workerClientRef.current?.sendTranscript(langCode, committed, true, ts);
       }
       try {
         const { data: inserted, error: insertError } = await supabase
