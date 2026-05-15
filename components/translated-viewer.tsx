@@ -507,35 +507,49 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
           {/* Committed history — newest nearest center, oldest fades toward top */}
           {historyEntries.map((entry, i) => {
             const fromEnd = historyEntries.length - 1 - i
-            const opacity = Math.max(0.13, 0.58 - fromEnd * 0.10)
-            const sizeClass = fromEnd === 0
-              ? 'text-xl font-medium'
-              : fromEnd === 1
-              ? 'text-lg font-normal'
-              : 'text-base font-normal'
+            // Uniform readable size; only entries near the scroll-off top get a gentle fade
+            const opacity = fromEnd >= 3 ? Math.max(0.35, 0.72 - (fromEnd - 3) * 0.12) : 0.72
             return (
               <p
                 key={entry.id}
-                className={`${sizeClass} leading-snug mb-4`}
-                style={{ opacity, transition: 'opacity 0.4s ease' }}
+                className="text-xl font-normal leading-relaxed"
+                style={{
+                  opacity,
+                  transition: 'opacity 0.5s ease',
+                  paddingTop: '0.4rem',
+                  paddingBottom: '0.4rem',
+                  paddingInlineStart: '1.25rem',
+                  paddingInlineEnd: '1.25rem',
+                  borderInlineStart: '3px solid transparent',
+                }}
               >
                 {entry.text}
               </p>
             )
           })}
 
-          {/* Active line — typewriter animated, locked at viewport center via scroll */}
+          {/* Active line: same size as history, "you are here" via accent border on reading-start side */}
           {(displayedText.length > 0 || isStreaming || lastEntry) && (
             <p
               ref={activeLineRef}
-              className={`text-[clamp(1.5rem,6vw,2.2rem)] font-semibold leading-snug mb-4 ${
-                isPartial ? 'text-black/45 italic' : 'text-black'
+              className={`text-xl font-semibold leading-relaxed ${
+                isPartial ? 'text-black/50 italic' : 'text-black'
               }`}
-              style={{ transition: 'color 0.2s ease' }}
+              style={{
+                transition: 'color 0.2s ease, border-color 0.2s ease',
+                borderInlineStart: isPartial
+                  ? '3px solid rgba(0,0,0,0.18)'
+                  : '3px solid rgba(0,0,0,0.78)',
+                paddingInlineStart: '1rem',
+                paddingInlineEnd: '1.25rem',
+                paddingTop: '0.4rem',
+                paddingBottom: '0.4rem',
+                marginTop: '0.2rem',
+              }}
             >
               {displayedText || ' '}
               {(isStreaming || displayedText !== activeTarget) && (
-                <span className="text-black/25 animate-pulse"> ▍</span>
+                <span className="text-black/30 animate-pulse"> ▍</span>
               )}
             </p>
           )}
