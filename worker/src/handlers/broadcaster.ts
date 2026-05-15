@@ -24,13 +24,13 @@ import {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /** Rolling context window: prior source utterances passed to the translator */
-const CONTEXT_SIZE = 6;
+const CONTEXT_SIZE = 10;
 
 /** Prior translated utterances passed alongside source (per lang) */
-const TRANSLATED_CONTEXT_SIZE = 4;
+const TRANSLATED_CONTEXT_SIZE = 8;
 
 /** Regenerate rolling topic summary every N flushed utterances */
-const SUMMARY_INTERVAL = 8;
+const SUMMARY_INTERVAL = 5;
 
 /** Translation engine tag written into every caption message */
 const ENGINE: TranslationEngine = 'legacy_text';

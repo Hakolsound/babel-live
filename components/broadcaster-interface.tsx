@@ -637,7 +637,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   const reconnectScribeRef = useRef<(() => Promise<void>) | null>(null);
   // Self-commit: fire every SELF_COMMIT_MS after the first word, sending only the delta
   // since the last commit. Resets when Scribe makes a real commit.
-  const SELF_COMMIT_MS = 2500;
+  const SELF_COMMIT_MS = 3500;
   const selfCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentPartialRef = useRef<string>('');
   const currentPartialLangRef = useRef<string>('source');
