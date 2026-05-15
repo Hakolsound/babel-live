@@ -106,9 +106,13 @@ const MODE_LABEL: Record<ViewerMode, string> = {
   audio_only: 'Audio',
 };
 
-function loadMode(): ViewerMode {
+function loadMode(ttsEnabled: boolean): ViewerMode {
   if (typeof window === 'undefined') return 'balanced';
-  return (localStorage.getItem('babel_viewer_mode') as ViewerMode | null) ?? 'balanced';
+  const stored = localStorage.getItem('babel_viewer_mode') as ViewerMode | null;
+  // If TTS is available but stored mode is captions_only, fall back to balanced
+  // so audio plays by default rather than silently staying off
+  if (ttsEnabled && stored === 'captions_only') return 'balanced';
+  return stored ?? 'balanced';
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -120,7 +124,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   })()
 
   const [selectedLang, setSelectedLang] = useState<string | null>(defaultLang)
-  const [viewerMode, setViewerModeState] = useState<ViewerMode>(loadMode)
+  const [viewerMode, setViewerModeState] = useState<ViewerMode>(() => loadMode(event.tts_enabled))
   const [audioUnlocked, setAudioUnlocked] = useState(false)
   const [audioPlaying, setAudioPlaying] = useState(false)
   const [broadcastNotLive, setBroadcastNotLive] = useState(false)
@@ -206,9 +210,12 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
       try {
         player = await AudioPlayer.create(48000)
         playerRef.current = player
+        console.log('[viewer] AudioPlayer ready')
       } catch (err) {
-        console.error('[viewer] AudioPlayer.create failed', err)
+        console.error('[viewer] AudioPlayer.create failed — no audio this session', err)
       }
+    } else {
+      console.log(`[viewer] audio skipped: tts_enabled=${event.tts_enabled} supported=${audioSupport.supported} mode=${mode}`)
     }
 
     const client = new ViewerClient(workerUrl, {
@@ -220,7 +227,9 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
       },
       onCaption: handleCaption,
       onAudioFrame: (frame) => {
-        if (mode !== 'captions_only') player?.pushFrame(frame)
+        if (mode !== 'captions_only') {
+          player?.pushFrame(frame)
+        }
       },
       onEventEnded: () => { setAudioPlaying(false); setIsLive(false) },
       onError: (code) => {
@@ -301,14 +310,16 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const [typewriterResetKey, setTypewriterResetKey] = useState(0)
 
   useEffect(() => {
-    if (streaming?.utteranceId && streaming.utteranceId !== prevStreamingId.current) {
-      if (prevStreamingId.current !== null) {
-        // Utterance boundary — reset so next draft types in fresh
-        setTypewriterResetKey(k => k + 1)
-      }
+    if (!streaming) {
+      prevStreamingId.current = null
+      return
+    }
+    if (streaming.utteranceId !== prevStreamingId.current) {
+      // Always reset on new utterance — prevents typewriter morphing from committed
+      // text into next utterance (which looks like a wipe to the viewer)
+      setTypewriterResetKey(k => k + 1)
       prevStreamingId.current = streaming.utteranceId
     }
-    if (!streaming) prevStreamingId.current = null
   }, [streaming?.utteranceId, streaming])
 
   const lastEntry = entries[entries.length - 1]
