@@ -29,15 +29,6 @@ const CONTEXT_SIZE = 6;
 /** Prior translated utterances passed alongside source (per lang) */
 const TRANSLATED_CONTEXT_SIZE = 4;
 
-/** Wait after last transcript before flushing (trailing silence gate) */
-const BUFFER_MS = 300;
-
-/** Force-flush if buffer has been accumulating for this long */
-const MAX_BUFFER_MS = 3500;
-
-/** Flush immediately on sentence-ending punctuation */
-const SENTENCE_END_RE = /[.!?]["']?\s*$/;
-
 /** Regenerate rolling topic summary every N flushed utterances */
 const SUMMARY_INTERVAL = 8;
 
@@ -121,32 +112,12 @@ export async function handleBroadcasterMessage(
 
       if (state.targetLangs.length === 0) break;
 
-      // Accumulate into buffer
-      const bufferWasEmpty = !state.utteranceBuffer;
-      state.utteranceBuffer = state.utteranceBuffer
-        ? `${state.utteranceBuffer} ${msg.text}`
-        : msg.text;
-
-      if (bufferWasEmpty) {
-        state.utteranceBufferStartedAt = Date.now();
-        state.utteranceBufferSentAt = msgSentAt ?? null;
-        state.utteranceBufferSttFinalAt = msgSttFinalAt ?? null;
-      }
-
-      const bufferAge = Date.now() - (state.utteranceBufferStartedAt ?? Date.now());
-      if (SENTENCE_END_RE.test(msg.text) || bufferAge >= MAX_BUFFER_MS) {
-        if (state.utteranceBufferTimer) {
-          clearTimeout(state.utteranceBufferTimer);
-          state.utteranceBufferTimer = null;
-        }
-        flushTranslationBuffer(state, msg.ts);
-      } else {
-        if (state.utteranceBufferTimer) clearTimeout(state.utteranceBufferTimer);
-        state.utteranceBufferTimer = setTimeout(() => {
-          state.utteranceBufferTimer = null;
-          flushTranslationBuffer(state, msg.ts);
-        }, BUFFER_MS);
-      }
+      // Translate each committed chunk immediately — no buffering
+      state.utteranceBuffer = msg.text;
+      state.utteranceBufferSentAt = msgSentAt ?? null;
+      state.utteranceBufferSttFinalAt = msgSttFinalAt ?? null;
+      state.utteranceBufferStartedAt = Date.now();
+      flushTranslationBuffer(state, msg.ts);
       break;
     }
 
