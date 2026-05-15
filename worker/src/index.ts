@@ -35,7 +35,7 @@ const server = Bun.serve<ClientMeta>({
     }
 
     if (url.pathname === '/ws') {
-      const upgraded = server.upgrade(req, { data: { role: null, eventId: null, lang: null } });
+      const upgraded = server.upgrade(req, { data: { role: null, eventId: null, lang: null, viewerMode: null } });
       if (upgraded) return undefined;
       return new Response('WebSocket upgrade failed', { status: 400 });
     }

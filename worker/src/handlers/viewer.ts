@@ -3,19 +3,9 @@ import type { ClientMeta, ViewerUp, WorkerToViewer, WorkerToBroadcaster, EventSt
 import { events, eventsByCode } from '../index';
 import { closeTtsPipeline, ensureTtsPipeline } from '../lib/tts-pipeline';
 
-function notifyBroadcasterListenerStats(state: EventState): void {
-  const counts: Record<string, number> = {};
-  for (const [lang, viewers] of state.viewers) {
-    if (viewers.size > 0) counts[lang] = viewers.size;
-  }
-  try {
-    (state.broadcasterWs as unknown as ServerWebSocket<ClientMeta>).send(
-      JSON.stringify({ type: 'listener_stats', counts } satisfies WorkerToBroadcaster),
-    );
-  } catch { /* broadcaster gone */ }
-}
-
 const PIPELINE_TEARDOWN_GRACE_MS = 30_000;
+
+// ── Message handler ───────────────────────────────────────────────────────────
 
 export async function handleViewerMessage(
   ws: ServerWebSocket<ClientMeta>,
@@ -27,24 +17,35 @@ export async function handleViewerMessage(
       const state = eventId ? events.get(eventId) : undefined;
 
       if (!state) {
-        ws.send(JSON.stringify({ type: 'error', code: 'EVENT_NOT_FOUND', message: 'Event not found or not live' } satisfies WorkerToViewer));
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: 'EVENT_NOT_FOUND',
+          message: 'Event not found or not live',
+        } satisfies WorkerToViewer));
         return;
       }
 
-      ws.data.eventId = state.eventId;
-      ws.data.lang = msg.lang;
-      ws.data.role = 'viewer';
+      ws.data.eventId  = state.eventId;
+      ws.data.lang     = msg.lang;
+      ws.data.role     = 'viewer';
+      ws.data.viewerMode = msg.mode ?? 'balanced';
 
       if (!state.viewers.has(msg.lang)) {
         state.viewers.set(msg.lang, new Set());
       }
       state.viewers.get(msg.lang)!.add(ws as unknown as WebSocket);
 
-      const reply: WorkerToViewer = { type: 'joined', lang: msg.lang, sampleRate: 48000 };
-      ws.send(JSON.stringify(reply));
+      ws.send(JSON.stringify({
+        type: 'joined',
+        lang: msg.lang,
+        sampleRate: 48000,
+      } satisfies WorkerToViewer));
 
       const viewerCount = state.viewers.get(msg.lang)!.size;
-      console.log(`[viewer] joined event=${state.eventId} lang=${msg.lang} total=${viewerCount}`);
+      console.log(
+        `[viewer] joined event=${state.eventId} lang=${msg.lang} ` +
+        `mode=${ws.data.viewerMode} total=${viewerCount}`,
+      );
 
       ensureTtsPipeline(state, msg.lang, viewerCount);
       notifyBroadcasterListenerStats(state);
@@ -59,6 +60,8 @@ export async function handleViewerMessage(
       await removeViewer(ws, eventId, oldLang);
 
       ws.data.lang = msg.lang;
+      ws.data.viewerMode = msg.mode ?? ws.data.viewerMode ?? 'balanced';
+
       const state = events.get(eventId);
       if (!state) return;
 
@@ -67,11 +70,16 @@ export async function handleViewerMessage(
       }
       state.viewers.get(msg.lang)!.add(ws as unknown as WebSocket);
 
-      const reply: WorkerToViewer = { type: 'joined', lang: msg.lang, sampleRate: 48000 };
-      ws.send(JSON.stringify(reply));
+      ws.send(JSON.stringify({
+        type: 'joined',
+        lang: msg.lang,
+        sampleRate: 48000,
+      } satisfies WorkerToViewer));
 
       const viewerCount = state.viewers.get(msg.lang)!.size;
-      console.log(`[viewer] switched event=${eventId} ${oldLang}→${msg.lang}`);
+      console.log(
+        `[viewer] switched event=${eventId} ${oldLang}→${msg.lang} mode=${ws.data.viewerMode}`,
+      );
       ensureTtsPipeline(state, msg.lang, viewerCount);
       notifyBroadcasterListenerStats(state);
       break;
@@ -86,6 +94,8 @@ export async function handleViewerMessage(
   }
 }
 
+// ── Cleanup ───────────────────────────────────────────────────────────────────
+
 export async function removeViewer(
   ws: ServerWebSocket<ClientMeta>,
   eventId: string,
@@ -98,16 +108,11 @@ export async function removeViewer(
   if (viewerSet) {
     viewerSet.delete(ws as unknown as WebSocket);
     const remaining = viewerSet.size;
-
     console.log(`[viewer] left event=${eventId} lang=${lang} remaining=${remaining}`);
     notifyBroadcasterListenerStats(state);
-
-    if (remaining === 0) {
-      scheduleLanguagePipelineTeardown(state, lang);
-    }
+    if (remaining === 0) scheduleLanguagePipelineTeardown(state, lang);
   }
 }
-
 
 function scheduleLanguagePipelineTeardown(state: EventState, lang: string): void {
   const pipeline = state.pipelines.get(lang);
@@ -118,9 +123,25 @@ function scheduleLanguagePipelineTeardown(state: EventState, lang: string): void
     if (!current) return;
     const viewerCount = current.viewers.get(lang)?.size ?? 0;
     if (viewerCount === 0) {
-      console.log(`[pipeline] teardown lang=${lang} event=${state.eventId} peak=${pipeline.peakListeners}`);
+      console.log(
+        `[pipeline] teardown lang=${lang} event=${state.eventId} peak=${pipeline.peakListeners}`,
+      );
       closeTtsPipeline(pipeline);
       current.pipelines.delete(lang);
     }
   }, PIPELINE_TEARDOWN_GRACE_MS);
+}
+
+// ── Broadcaster stats notification ───────────────────────────────────────────
+
+function notifyBroadcasterListenerStats(state: EventState): void {
+  const counts: Record<string, number> = {};
+  for (const [lang, viewers] of state.viewers) {
+    if (viewers.size > 0) counts[lang] = viewers.size;
+  }
+  try {
+    (state.broadcasterWs as unknown as ServerWebSocket<ClientMeta>).send(
+      JSON.stringify({ type: 'listener_stats', counts } satisfies WorkerToBroadcaster),
+    );
+  } catch { /* broadcaster gone */ }
 }
