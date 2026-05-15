@@ -314,14 +314,21 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const activeTarget = streaming?.text ?? lastEntry?.text ?? ''
   const displayedText = useTypewriter(activeTarget, typewriterResetKey)
 
-  // ── Scroll: keep active line at viewport center ────────────────────────────
-  // Fires only on utterance boundaries (not per character) to avoid jitter
+  // ── Scroll: keep active line at viewport center ────────────────────────
+  // Uses getBoundingClientRect deltas so nested divs don't skew the offset.
+  // rAF ensures DOM has painted before we measure.
   useEffect(() => {
     const container = scrollRef.current
     const activeLine = activeLineRef.current
     if (!container || !activeLine) return
-    const ideal = activeLine.offsetTop - container.clientHeight / 2 + activeLine.clientHeight / 2
-    container.scrollTop = Math.max(0, ideal)
+    const raf = requestAnimationFrame(() => {
+      const cr = container.getBoundingClientRect()
+      const lr = activeLine.getBoundingClientRect()
+      const lineCenter = lr.top + lr.height / 2 - cr.top
+      const delta = lineCenter - container.clientHeight / 2
+      container.scrollTop = Math.max(0, container.scrollTop + delta)
+    })
+    return () => cancelAnimationFrame(raf)
   }, [entries.length, streaming?.utteranceId])
 
   // ── Derived ────────────────────────────────────────────────────────────────
