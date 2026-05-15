@@ -170,6 +170,49 @@ function buildPrompt(opts: PromptOpts): { system: string; contextBlock: string }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// ── Input / output guards ─────────────────────────────────────────────────────
+
+/**
+ * Returns true when STT output is too noisy to translate meaningfully.
+ * Catches patterns like repeated dashes "ב-ב-ב-ב" or stuttered single chars.
+ */
+function isGarbageInput(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+
+  // Strip whitespace and punctuation to get pure word characters
+  const chars = t.replace(/[\s\p{P}]/gu, '');
+  if (chars.length < 2) return true;
+
+  // High repeated-char ratio: e.g. "ב-ב-ב-ב-ב" → chars = "בבבבב" → ratio ~1.0
+  const charFreq = new Map<string, number>();
+  for (const c of chars) charFreq.set(c, (charFreq.get(c) ?? 0) + 1);
+  const maxFreq = Math.max(...charFreq.values());
+  if (maxFreq / chars.length > 0.6) return true;
+
+  // Separator-dense: more than 60% dashes/hyphens
+  const separators = (t.match(/[-–—]/g) ?? []).length;
+  if (separators / t.length > 0.35) return true;
+
+  return false;
+}
+
+// Phrases that signal Claude broke the "output nothing" rule and meta-commented instead
+const META_COMMENTARY_PATTERNS = [
+  /\bi cannot provide\b/i,
+  /\bcannot (translate|provide a (meaningful|translation))\b/i,
+  /\bnot meaningful speech\b/i,
+  /\bnonsense\b.*\btext\b/i,
+  /\bdo not correspond to recognizable\b/i,
+  /\bunclear phonetic\b/i,
+  /\bappears to contain\b/i,
+  /\bthis (text|input|utterance|phrase) (is|appears|seems|does not|cannot)\b/i,
+];
+
+function isMetaCommentary(text: string): boolean {
+  return META_COMMENTARY_PATTERNS.some(re => re.test(text));
+}
+
 export async function translateText(opts: {
   text: string;
   sourceLang: string;
@@ -183,7 +226,7 @@ export async function translateText(opts: {
   model?: string;
 }): Promise<string> {
   const { text, profile = LIVE_PROFILE, model } = opts;
-  if (!text.trim()) return '';
+  if (!text.trim() || isGarbageInput(text)) return '';
 
   const { system, contextBlock } = buildPrompt({ ...opts, profile });
   const userMsg = `${contextBlock}Translate this utterance:\n${text}`;
@@ -197,7 +240,9 @@ export async function translateText(opts: {
 
   const block = response.content[0];
   if (!block || block.type !== 'text') throw new Error('Unexpected response from Claude');
-  return block.text.trim();
+  const result = block.text.trim();
+  if (isMetaCommentary(result)) return '';
+  return result;
 }
 
 export interface StreamingTranslationResult {
@@ -221,7 +266,7 @@ export async function translateTextStreaming(opts: {
   onFirstToken?: () => void;
 }): Promise<StreamingTranslationResult> {
   const { text, profile = LIVE_PROFILE, onPartial, onFirstToken } = opts;
-  if (!text.trim()) return { translated: '', firstTokenMs: null, totalMs: 0 };
+  if (!text.trim() || isGarbageInput(text)) return { translated: '', firstTokenMs: null, totalMs: 0 };
 
   const { system, contextBlock } = buildPrompt({ ...opts, profile });
   const userMsg = `${contextBlock}Translate this utterance:\n${text}`;
@@ -255,6 +300,13 @@ export async function translateTextStreaming(opts: {
   }
 
   const final = accumulated.trim();
+  // Discard if Claude broke the "output nothing" rule and meta-commented instead
+  if (final && isMetaCommentary(final)) {
+    const totalMsNow = Date.now() - startedAt;
+    const ftMs = firstTokenAt !== null ? firstTokenAt - startedAt : null;
+    console.warn(`[translate] meta-commentary discarded lang=${opts.targetLang} text="${final.slice(0, 80)}"`);
+    return { translated: '', firstTokenMs: ftMs, totalMs: totalMsNow };
+  }
   if (final) onPartial(final);
 
   const totalMs = Date.now() - startedAt;
