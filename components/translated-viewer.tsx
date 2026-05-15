@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { LANGUAGES } from "@/lib/languages"
 import { ViewerClient, type CaptionEvent, type ViewerMode } from "@/lib/viewer-client"
-import { AudioPlayer, checkAudioSupport } from "@/lib/audio-player"
+import { AudioPlayer, checkAudioSupport, type AudioSupportResult } from "@/lib/audio-player"
 import { resolveWorkerUrl } from "@/lib/resolve-worker-url"
 
 const RTL_LANGS = new Set(['he', 'ar', 'fa', 'ur', 'yi', 'dv']);
@@ -12,15 +12,10 @@ function isRtlLang(lang: string): boolean {
 }
 
 // ── Typewriter ─────────────────────────────────────────────────────────────────
-// Character-level morph: finds common prefix, deletes back fast, types forward.
-// resetKey clears to '' — used on utterance boundary.
-
 function useTypewriter(target: string, resetKey: number): string {
   const [displayed, setDisplayed] = useState('')
   const ref = useRef<{ target: string; displayed: string; timer: ReturnType<typeof setTimeout> | null }>({
-    target: '',
-    displayed: '',
-    timer: null,
+    target: '', displayed: '', timer: null,
   })
   ref.current.target = target
 
@@ -50,9 +45,7 @@ function useTypewriter(target: string, resetKey: number): string {
 
   useEffect(() => {
     if (ref.current.timer) { clearTimeout(ref.current.timer); ref.current.timer = null }
-    ref.current.displayed = ''
-    setDisplayed('')
-    schedule()
+    ref.current.displayed = ''; setDisplayed(''); schedule()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey])
 
@@ -67,7 +60,7 @@ function useTypewriter(target: string, resetKey: number): string {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface CommittedEntry {
-  id: string          // utteranceId
+  id: string
   text: string
   lang: string
   ts: number
@@ -99,20 +92,24 @@ interface TranslatedViewerProps {
 
 const VIEWER_MODES: ViewerMode[] = ['fast', 'balanced', 'accurate', 'captions_only', 'audio_only'];
 const MODE_LABEL: Record<ViewerMode, string> = {
-  fast: 'Fast',
-  balanced: 'Live',
-  accurate: 'Accurate',
-  captions_only: 'Captions',
-  audio_only: 'Audio',
+  fast: 'Fast', balanced: 'Live', accurate: 'Accurate',
+  captions_only: 'Captions', audio_only: 'Audio',
 };
 
 function loadMode(ttsEnabled: boolean): ViewerMode {
   if (typeof window === 'undefined') return 'balanced';
   const stored = localStorage.getItem('babel_viewer_mode') as ViewerMode | null;
-  // If TTS is available but stored mode is captions_only, fall back to balanced
-  // so audio plays by default rather than silently staying off
   if (ttsEnabled && stored === 'captions_only') return 'balanced';
   return stored ?? 'balanced';
+}
+
+function audioUnsupportedNote(reason: AudioSupportResult['reason']): string {
+  switch (reason) {
+    case 'no_audio_decoder': return 'Live audio requires Chrome 94+ or Edge 94+ (WebCodecs).'
+    case 'no_audio_context': return 'Live audio requires Web Audio API support.'
+    case 'no_audio_worklet': return 'Live audio requires AudioWorklet support.'
+    default: return 'Live audio is not supported in this browser.'
+  }
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -125,6 +122,11 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
 
   const [selectedLang, setSelectedLang] = useState<string | null>(defaultLang)
   const [viewerMode, setViewerModeState] = useState<ViewerMode>(() => loadMode(event.tts_enabled))
+
+  // Audio support is unknown until useEffect runs (SSR has no AudioContext/AudioDecoder)
+  const [audioSupport, setAudioSupport] = useState<AudioSupportResult>({ supported: false })
+  const [audioSupportChecked, setAudioSupportChecked] = useState(false)
+
   const [audioUnlocked, setAudioUnlocked] = useState(false)
   const [audioPlaying, setAudioPlaying] = useState(false)
   const [broadcastNotLive, setBroadcastNotLive] = useState(false)
@@ -140,14 +142,21 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const clientRef = useRef<ViewerClient | null>(null)
   const playerRef = useRef<AudioPlayer | null>(null)
   const currentLang = useRef<string | null>(null)
-  const audioSupport = useRef(checkAudioSupport()).current
+
+  // Detect audio support client-side only — must be in useEffect, never SSR
+  useEffect(() => {
+    const result = checkAudioSupport()
+    setAudioSupport(result)
+    setAudioSupportChecked(true)
+    console.log('[viewer] audio support:', result)
+  }, [])
 
   const setViewerMode = useCallback((mode: ViewerMode) => {
     setViewerModeState(mode)
     localStorage.setItem('babel_viewer_mode', mode)
   }, [])
 
-  // Detect browser language match on mount
+  // Detect browser language preference on mount
   useEffect(() => {
     const candidates = [
       ...(navigator.languages ?? []),
@@ -167,16 +176,13 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     const { utteranceId, text, stability } = caption
 
     if (stability === 'superseded') {
-      // Displaced by a new utterance — discard, never commit
       setStreaming(prev => prev?.utteranceId === utteranceId ? null : prev)
       return
     }
-
     if (stability === 'corrected') {
       setEntries(prev => prev.map(e => e.id === utteranceId ? { ...e, text } : e))
       return
     }
-
     if (stability === 'final') {
       setStreaming(prev => prev?.utteranceId === utteranceId ? null : prev)
       if (text.trim()) {
@@ -188,8 +194,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
       }
       return
     }
-
-    // partial or stable — update streaming slot
+    // partial or stable
     setIsLive(true)
     setStreaming({ utteranceId, text, stability, seq: caption.seq })
   }, [])
@@ -212,24 +217,22 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
         playerRef.current = player
         console.log('[viewer] AudioPlayer ready')
       } catch (err) {
-        console.error('[viewer] AudioPlayer.create failed — no audio this session', err)
+        console.error('[viewer] AudioPlayer.create failed', err)
       }
     } else {
-      console.log(`[viewer] audio skipped: tts_enabled=${event.tts_enabled} supported=${audioSupport.supported} mode=${mode}`)
+      console.log(`[viewer] audio skipped tts=${event.tts_enabled} supported=${audioSupport.supported} mode=${mode}`)
     }
 
     const client = new ViewerClient(workerUrl, {
-      onJoined: (joinedLang, _sampleRate) => {
+      onJoined: (joinedLang) => {
         setBroadcastNotLive(false)
         setIsReconnecting(false)
         if (player) setAudioPlaying(true)
-        console.log(`[viewer] joined lang=${joinedLang} mode=${mode}`)
+        console.log(`[viewer] joined lang=${joinedLang} mode=${mode} audio=${!!player}`)
       },
       onCaption: handleCaption,
       onAudioFrame: (frame) => {
-        if (mode !== 'captions_only') {
-          player?.pushFrame(frame)
-        }
+        if (mode !== 'captions_only') player?.pushFrame(frame)
       },
       onEventEnded: () => { setAudioPlaying(false); setIsLive(false) },
       onError: (code) => {
@@ -245,15 +248,19 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     client.join(event.event_code, lang, mode)
   }, [event.tts_enabled, event.event_code, event.fly_region, audioSupport.supported, handleCaption])
 
-  // Caption-only mode or no TTS: auto-unlock (no user gesture required)
-  const needsAudioUnlock = event.tts_enabled && audioSupport.supported
+  // Gate: wait until audio support is known before auto-unlocking or showing gate.
+  // Without this, SSR would always see audioSupport.supported=false and auto-unlock
+  // before the client has had a chance to check, connecting without audio.
+  const needsAudioUnlock = audioSupportChecked
+    && event.tts_enabled && audioSupport.supported
     && viewerMode !== 'captions_only' && !!event.event_code
 
   useEffect(() => {
+    if (!audioSupportChecked) return
     if (!needsAudioUnlock && selectedLang && !audioUnlocked) {
       setAudioUnlocked(true)
     }
-  }, [needsAudioUnlock, selectedLang, audioUnlocked])
+  }, [audioSupportChecked, needsAudioUnlock, selectedLang, audioUnlocked])
 
   const handleUnlock = useCallback(async () => {
     setAudioUnlocked(true)
@@ -267,7 +274,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     }
   }, [selectedLang, startViewer, viewerMode])
 
-  // Connect / reconnect on lang or mode change
+  // Connect/reconnect on lang or mode change (only once audio-support is known)
   useEffect(() => {
     if (!selectedLang || !audioUnlocked) return
     if (currentLang.current === selectedLang) return
@@ -281,13 +288,12 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     startViewer(selectedLang, viewerMode).catch(console.error)
   }, [selectedLang, audioUnlocked, startViewer, viewerMode])
 
-  // Reconnect poll when broadcast is not yet live
+  // Poll reconnect when broadcast not yet live
   useEffect(() => {
     if (!broadcastNotLive || !audioUnlocked || !selectedLang) return
     const timer = setTimeout(() => {
       currentLang.current = null
-      clientRef.current?.destroy()
-      clientRef.current = null
+      clientRef.current?.destroy(); clientRef.current = null
       setBroadcastNotLive(false)
       startViewer(selectedLang, viewerMode).catch(console.error)
     }, 5000)
@@ -298,7 +304,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     return () => { clientRef.current?.destroy(); playerRef.current?.destroy() }
   }, [])
 
-  // Clear entries/streaming on lang change
+  // Clear transcript on lang change
   useEffect(() => {
     setEntries([])
     setStreaming(null)
@@ -310,13 +316,8 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const [typewriterResetKey, setTypewriterResetKey] = useState(0)
 
   useEffect(() => {
-    if (!streaming) {
-      prevStreamingId.current = null
-      return
-    }
+    if (!streaming) { prevStreamingId.current = null; return }
     if (streaming.utteranceId !== prevStreamingId.current) {
-      // Always reset on new utterance — prevents typewriter morphing from committed
-      // text into next utterance (which looks like a wipe to the viewer)
       setTypewriterResetKey(k => k + 1)
       prevStreamingId.current = streaming.utteranceId
     }
@@ -326,7 +327,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const activeTarget = streaming?.text ?? lastEntry?.text ?? ''
   const displayedText = useTypewriter(activeTarget, typewriterResetKey)
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom on every new character or entry
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -337,26 +338,15 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
   const langName = selectedLang
     ? (LANGUAGES.find(l => l.code === selectedLang)?.name ?? selectedLang.toUpperCase())
     : null
-
   const isRtl = selectedLang ? isRtlLang(selectedLang) : false
   const isStreaming = streaming !== null
   const isPartial = streaming?.stability === 'partial'
   const hasContent = entries.length > 0 || isStreaming
   const isMinimized = isLive && hasContent
-  const isTyping = displayedText !== activeTarget
-  // Context entries: 3 before the active one when streaming, 3 before last when not
-  const contextEntries = isStreaming ? entries.slice(-3) : entries.slice(-4, -1)
 
-  // ── Audio unsupported reason text ──────────────────────────────────────────
-
-  function audioUnsupportedNote(): string {
-    switch (audioSupport.reason) {
-      case 'no_audio_decoder': return 'Live audio requires a browser with WebCodecs support (Chrome 94+, Edge 94+).'
-      case 'no_audio_context': return 'Live audio requires Web Audio API support.'
-      case 'no_audio_worklet': return 'Live audio requires AudioWorklet support.'
-      default: return 'Live audio is not supported in this browser. Captions only.'
-    }
-  }
+  // History = all committed entries except the last when not streaming
+  // (last committed shown as active via typewriter)
+  const historyEntries = isStreaming ? entries : entries.slice(0, -1)
 
   // ── Phase: language pick ───────────────────────────────────────────────────
 
@@ -369,9 +359,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
             <p className="mt-2 text-black/50 text-base leading-snug">{event.description}</p>
           )}
         </div>
-        <p className="text-xs font-bold tracking-widest uppercase text-black/40 mb-4">
-          Choose your language
-        </p>
+        <p className="text-xs font-bold tracking-widest uppercase text-black/40 mb-4">Choose your language</p>
         <div className="space-y-2">
           {event.target_languages.length === 0 ? (
             <p className="text-black/40 text-sm">No languages configured yet.</p>
@@ -412,18 +400,14 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
         <div className="mb-8 space-y-3">
           <h1 className="text-2xl font-black tracking-tight">{event.title}</h1>
           <p className="text-black/40 text-sm">
-            Translated to{" "}
-            <span className="font-bold text-black">{langName}</span>
+            Translated to <span className="font-bold text-black">{langName}</span>
           </p>
-          {!audioSupport.supported && (
-            <p className="text-amber-600 text-xs mt-2 max-w-xs mx-auto">{audioUnsupportedNote()}</p>
-          )}
         </div>
         <button
           onClick={handleUnlock}
           className="w-full max-w-xs py-5 bg-black text-white font-black text-xl rounded-2xl hover:bg-black/80 active:scale-[0.97] transition-all"
         >
-          {audioSupport.supported ? 'Tap to listen' : 'Join (captions only)'}
+          Tap to listen
         </button>
         <button
           onClick={() => setLangPickerOpen(true)}
@@ -435,44 +419,40 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
     )
   }
 
-  // ── Phase: live captions ───────────────────────────────────────────────────
+  // ── Phase: live transcript ─────────────────────────────────────────────────
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
 
       {/* Status bar */}
       <div
-        className="flex items-center justify-between px-5 border-b border-black/8 transition-all duration-300 flex-shrink-0"
+        className="flex-shrink-0 flex items-center justify-between px-5 border-b border-black/8 transition-all duration-300"
         style={{ paddingTop: isMinimized ? 5 : 12, paddingBottom: isMinimized ? 5 : 12 }}
       >
         <div className="flex items-center gap-2">
           {isReconnecting ? (
-            <span className="text-[10px] font-bold tracking-widest uppercase text-amber-500 animate-pulse">
-              Reconnecting…
-            </span>
+            <span className="text-[10px] font-bold tracking-widest uppercase text-amber-500 animate-pulse">Reconnecting…</span>
           ) : isLive ? (
             <>
               <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse flex-shrink-0" />
-              {!isMinimized && (
-                <span className="text-[10px] font-bold tracking-widest uppercase text-black/50">Live</span>
-              )}
+              {!isMinimized && <span className="text-[10px] font-bold tracking-widest uppercase text-black/50">Live</span>}
             </>
           ) : broadcastNotLive ? (
-            <span className="text-[10px] font-bold tracking-widest uppercase text-black/20">
-              Waiting for broadcast…
-            </span>
+            <span className="text-[10px] font-bold tracking-widest uppercase text-black/20">Waiting for broadcast…</span>
           ) : (
             <span className="text-[10px] font-bold tracking-widest uppercase text-black/20">Connecting…</span>
           )}
-          {event.tts_enabled && audioSupport.supported && audioPlaying && viewerMode !== 'captions_only' && (
-            <span className="text-[10px] text-black/30 ml-1">· audio on</span>
+          {audioPlaying && viewerMode !== 'captions_only' && (
+            <span className="text-[10px] text-black/30 ml-1">· audio</span>
+          )}
+          {audioSupportChecked && !audioSupport.supported && event.tts_enabled && (
+            <span className="text-[10px] text-black/20 ml-1">· captions only</span>
           )}
         </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => setModePickerOpen(o => !o)}
             className="text-[10px] font-bold border border-black/15 rounded-full px-2 py-1 hover:border-black/40 transition-colors text-black/40"
-            title="Viewer mode"
           >
             {MODE_LABEL[viewerMode]}
           </button>
@@ -494,7 +474,6 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
               onClick={() => {
                 setViewerMode(m)
                 setModePickerOpen(false)
-                // Reconnect with new mode if connected
                 if (currentLang.current && clientRef.current) {
                   const lang = currentLang.current
                   currentLang.current = null
@@ -502,9 +481,7 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
                 }
               }}
               className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold tracking-wide transition-colors ${
-                m === viewerMode
-                  ? 'bg-black text-white'
-                  : 'bg-black/5 text-black/50 hover:bg-black/10'
+                m === viewerMode ? 'bg-black text-white' : 'bg-black/5 text-black/50 hover:bg-black/10'
               }`}
             >
               {MODE_LABEL[m]}
@@ -513,55 +490,48 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
         </div>
       )}
 
-      {/* Scrollable caption area */}
+      {/* Scrollable transcript — all entries accumulate, current at bottom */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="min-h-full flex flex-col justify-end px-5 pb-10 pt-8 gap-4">
+        <div className="min-h-full flex flex-col justify-end px-5 pb-8 pt-6" dir={isRtl ? 'rtl' : 'ltr'}>
 
           {!hasContent && !broadcastNotLive && (
-            <p className="text-center text-black/20 text-sm font-medium">
-              Waiting for the broadcast to start
-            </p>
+            <p className="text-center text-black/20 text-sm">Waiting for the broadcast to start…</p>
           )}
-
           {broadcastNotLive && !hasContent && (
-            <p className="text-center text-black/20 text-sm font-medium">
-              The broadcast hasn't started yet — will connect automatically
-            </p>
+            <p className="text-center text-black/20 text-sm">Broadcast hasn't started — connecting automatically…</p>
           )}
 
-          {/* Fading committed context entries */}
-          {contextEntries.map((entry, i) => {
-            const fromEnd = contextEntries.length - 1 - i
-            const isCurrent = !isStreaming && fromEnd === 0
-            const opacity = isCurrent ? 1 : fromEnd === 0 ? 0.5 : fromEnd === 1 ? 0.25 : 0.10
-            const sizeClass = isCurrent
-              ? 'text-[clamp(1.4rem,5.5vw,2.1rem)] font-semibold'
-              : fromEnd === 0 ? 'text-lg font-medium'
-              : fromEnd === 1 ? 'text-base font-normal'
+          {/* All committed history entries */}
+          {historyEntries.map((entry, i) => {
+            // Fade by distance from end: most recent = 0.55, older fade further
+            const fromEnd = historyEntries.length - 1 - i
+            const opacity = Math.max(0.12, 0.55 - fromEnd * 0.12)
+            const sizeClass = fromEnd === 0
+              ? 'text-xl font-medium'
+              : fromEnd === 1
+              ? 'text-base font-normal'
               : 'text-sm font-normal'
             return (
               <p
                 key={entry.id}
-                className={`${sizeClass} leading-snug`}
-                style={{ opacity, transition: 'opacity 0.5s ease', textAlign: isRtl ? 'right' : 'left' }}
-                dir={isRtl ? 'rtl' : 'ltr'}
+                className={`${sizeClass} leading-snug mb-3`}
+                style={{ opacity, transition: 'opacity 0.4s ease' }}
               >
                 {entry.text}
               </p>
             )
           })}
 
-          {/* Active text — typewriter animated */}
-          {(displayedText.length > 0 || isStreaming) && (
+          {/* Active line — typewriter animated, large, always at bottom */}
+          {(displayedText.length > 0 || isStreaming || lastEntry) && (
             <p
-              className={`text-[clamp(1.4rem,5.5vw,2.1rem)] leading-snug font-semibold ${
-                isPartial ? 'text-black/50 italic' : 'text-black'
+              className={`text-[clamp(1.5rem,6vw,2.2rem)] font-semibold leading-snug ${
+                isPartial ? 'text-black/45 italic' : 'text-black'
               }`}
-              dir={isRtl ? 'rtl' : 'ltr'}
-              style={{ textAlign: isRtl ? 'right' : 'left', transition: 'color 0.2s ease' }}
+              style={{ transition: 'color 0.2s ease' }}
             >
-              {displayedText}
-              {(isStreaming || isTyping) && (
+              {displayedText || ' '/* keep height stable */}
+              {(isStreaming || displayedText !== activeTarget) && (
                 <span className="text-black/25 animate-pulse"> ▍</span>
               )}
             </p>
@@ -570,12 +540,13 @@ export function TranslatedViewer({ event, initialLang }: TranslatedViewerProps) 
         </div>
       </div>
 
-      {/* Audio-unsupported notice (bottom, non-intrusive) */}
-      {event.tts_enabled && !audioSupport.supported && (
+      {/* Audio unsupported notice */}
+      {audioSupportChecked && !audioSupport.supported && event.tts_enabled && (
         <div className="flex-shrink-0 px-5 py-2 text-center border-t border-black/5">
-          <p className="text-[10px] text-black/25">{audioUnsupportedNote()}</p>
+          <p className="text-[10px] text-black/25">{audioUnsupportedNote(audioSupport.reason)}</p>
         </div>
       )}
+
     </div>
   )
 }
