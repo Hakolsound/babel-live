@@ -633,6 +633,8 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   const sequenceNumberRef = useRef(0);
   const eventStartRef = useRef<number>(0);
   const workerClientRef = useRef<WorkerClient | null>(null);
+  const isRecordingRef = useRef(false);
+  const reconnectScribeRef = useRef<(() => Promise<void>) | null>(null);
   // Self-commit: fire every SELF_COMMIT_MS after the first word, sending only the delta
   // since the last commit. Resets when Scribe makes a real commit.
   const SELF_COMMIT_MS = 2500;
@@ -772,7 +774,17 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
         if (!insertError && inserted) setCaptions((prev) => [...prev, inserted as Caption]);
       } catch { /* silent */ }
     },
-    onError: (err) => setError(`Transcription error: ${err instanceof Error ? err.message : "Unknown"}`),
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : "Unknown";
+      console.error('[scribe] error:', msg);
+      setError(`Transcription error: ${msg} — reconnecting…`);
+      if (isRecordingRef.current && reconnectScribeRef.current) {
+        const reconnect = reconnectScribeRef.current;
+        setTimeout(() => {
+          if (isRecordingRef.current) reconnect().catch(console.error);
+        }, 2000);
+      }
+    },
   });
 
   const handleSaveLanguages = async () => {
@@ -847,14 +859,25 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
       if (!res.ok) { const e = await res.json() as { error?: string }; throw new Error(e.error ?? "Token error"); }
       const { token } = await res.json() as { token: string };
 
-      await scribe.connect({
-        token,
+      const scribeConnectOpts = {
         microphone: {
           echoCancellation: true, noiseSuppression: true, autoGainControl: true,
           ...(selectedDeviceId ? { deviceId: selectedDeviceId } : {}),
         },
         ...(selectedSourceLang ? { languageCode: selectedSourceLang } : {}),
-      });
+      };
+
+      reconnectScribeRef.current = async () => {
+        try {
+          const r = await fetch(`/api/scribe-token?eventUid=${event.uid}`);
+          if (!r.ok) return;
+          const { token: newToken } = await r.json() as { token: string };
+          await scribe.connect({ token: newToken, ...scribeConnectOpts });
+        } catch { /* silent — will be retried on next error */ }
+      };
+
+      await scribe.connect({ token, ...scribeConnectOpts });
+      isRecordingRef.current = true;
       setIsRecording(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start recording");
@@ -891,6 +914,8 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
     window.addEventListener('error', suppressScribeCleanupErrors);
     setTimeout(() => window.removeEventListener('error', suppressScribeCleanupErrors), 3000);
 
+    isRecordingRef.current = false;
+    reconnectScribeRef.current = null;
     scribe.disconnect();
     workerClientRef.current?.end();
     workerClientRef.current = null;
