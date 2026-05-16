@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
-  Copy, Check, ExternalLink, Mic, MicOff,
+  Copy, Check, ExternalLink, Mic, MicOff, Square,
   AlertCircle, Languages, Save, Wifi, WifiOff,
   Headphones, Users, ChevronDown, Pause, Play,
   Download, Plus, Trash2, ArrowLeft, Globe,
@@ -1043,7 +1043,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           </span>
         )}
 
-        {/* LIVE badge + elapsed timer */}
+        {/* LIVE badge */}
         {isRecording && (
           <div
             className="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-full"
@@ -1051,7 +1051,6 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           >
             <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
             <span className="text-[10px] font-bold tracking-widest text-red-400">LIVE</span>
-            <span className="text-[10px] font-mono tabular-nums text-red-400/70">{elapsedTime}</span>
           </div>
         )}
 
@@ -1172,7 +1171,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
               className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all active:scale-[0.98] animate-pulse"
               style={{ background: "#dc2626", color: "white" }}
             >
-              <MicOff className="h-3.5 w-3.5" />
+              <Square className="h-3.5 w-3.5 fill-white" />
               {totalListeners > 0 ? "End anyway" : "Confirm end"}
             </button>
             <button
@@ -1189,7 +1188,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
             className="h-8 flex items-center gap-1.5 px-4 rounded-lg font-bold text-sm transition-all active:scale-[0.98] shrink-0"
             style={{ background: "#dc2626", color: "white" }}
           >
-            <MicOff className="h-3.5 w-3.5" />
+            <Square className="h-3.5 w-3.5 fill-white" />
             <span className="font-mono tabular-nums">{elapsedTime}</span>
           </button>
         )}
