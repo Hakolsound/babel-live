@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Copy, Check, ExternalLink, Mic, MicOff,
@@ -97,6 +97,25 @@ function HealthDot({ lastAt, active }: { lastAt: number | null; active: boolean 
   if (age < 30_000) return <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse" />;
   if (age < 60_000) return <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />;
   return <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />;
+}
+
+// ── Elapsed time hook ────────────────────────────────────────────────────────
+function useElapsedTime(startRef: React.MutableRefObject<number>, active: boolean): string {
+  const [elapsed, setElapsed] = useState('00:00:00')
+  useEffect(() => {
+    if (!active || !startRef.current) { setElapsed('00:00:00'); return }
+    const tick = () => {
+      const s = Math.floor((Date.now() - startRef.current) / 1000)
+      const h = Math.floor(s / 3600)
+      const m = Math.floor((s % 3600) / 60)
+      const sec = s % 60
+      setElapsed(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [active, startRef])
+  return elapsed
 }
 
 // ── Nav item ──────────────────────────────────────────────────────────────────
@@ -972,6 +991,20 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
   }, [event.id, event.uid, supabase]);
 
   const totalListeners = Object.values(listenerCounts).reduce((s, n) => s + n, 0);
+  const elapsedTime = useElapsedTime(eventStartRef, isRecording)
+
+  // Worst recent latency across active (non-paused) language feeds
+  const overallHealth = (() => {
+    if (!isRecording) return 'idle' as const
+    const recents = Object.entries(latencyHistory)
+      .filter(([lang]) => !pausedLangs.has(lang))
+      .map(([, hist]) => hist[hist.length - 1] ?? 0)
+    if (recents.length === 0) return 'idle' as const
+    const worst = Math.max(...recents)
+    if (worst < 1500) return 'good' as const
+    if (worst < 3000) return 'warn' as const
+    return 'bad' as const
+  })()
   const selectedDeviceLabel = audioDevices.find((d) => d.deviceId === selectedDeviceId)?.label ?? "No mic";
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL ?? "";
   const checklistChecks = { micSelected: !!selectedDeviceId, targetLangs: targetLangs.length > 0, workerUrl: !!workerUrl };
@@ -1010,7 +1043,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           </span>
         )}
 
-        {/* LIVE badge */}
+        {/* LIVE badge + elapsed timer */}
         {isRecording && (
           <div
             className="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-full"
@@ -1018,6 +1051,37 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
           >
             <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
             <span className="text-[10px] font-bold tracking-widest text-red-400">LIVE</span>
+            <span className="text-[10px] font-mono tabular-nums text-red-400/70">{elapsedTime}</span>
+          </div>
+        )}
+
+        {/* Viewer count badge */}
+        {isRecording && totalListeners > 0 && (
+          <div
+            className="flex items-center gap-1 shrink-0 px-2 py-0.5 rounded-full"
+            style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.09)" }}
+          >
+            <Users className="h-3 w-3" style={{ color: "rgba(255,255,255,0.35)" }} />
+            <span className="text-[10px] font-bold tabular-nums" style={{ color: "rgba(255,255,255,0.55)" }}>{totalListeners}</span>
+          </div>
+        )}
+
+        {/* Translation health pill */}
+        {isRecording && overallHealth !== 'idle' && (
+          <div
+            className="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-full"
+            style={{
+              background: overallHealth === 'good' ? "rgba(52,211,153,0.08)" : overallHealth === 'warn' ? "rgba(245,158,11,0.10)" : "rgba(239,68,68,0.10)",
+              border: overallHealth === 'good' ? "1px solid rgba(52,211,153,0.18)" : overallHealth === 'warn' ? "1px solid rgba(245,158,11,0.20)" : "1px solid rgba(239,68,68,0.20)",
+            }}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${overallHealth === 'good' ? 'bg-emerald-400' : overallHealth === 'warn' ? 'bg-amber-400' : 'bg-red-400'}`} />
+            <span
+              className="text-[10px] font-medium"
+              style={{ color: overallHealth === 'good' ? "rgba(52,211,153,0.85)" : overallHealth === 'warn' ? "rgba(245,158,11,0.85)" : "rgba(239,68,68,0.85)" }}
+            >
+              {overallHealth === 'good' ? 'Good' : overallHealth === 'warn' ? 'Slow' : 'Lagging'}
+            </span>
           </div>
         )}
 
@@ -1126,7 +1190,7 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
             style={{ background: "#dc2626", color: "white" }}
           >
             <MicOff className="h-3.5 w-3.5" />
-            End Broadcast
+            <span className="font-mono tabular-nums">{elapsedTime}</span>
           </button>
         )}
 
@@ -1497,6 +1561,39 @@ export function BroadcasterInterface({ event, viewerUrl }: BroadcasterInterfaceP
                   </span>
                 )}
               </div>
+
+              {/* Viewer Preview iframe */}
+              {event.event_code && targetLangs.length > 0 && (
+                <div
+                  className="rounded-xl overflow-hidden"
+                  style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+                >
+                  <div
+                    className="flex items-center justify-between px-3 py-2"
+                    style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                  >
+                    <p className="text-[10px] font-bold tracking-[0.2em] uppercase" style={{ color: "rgba(255,255,255,0.25)" }}>
+                      Viewer Preview — {langName(targetLangs[0]!)}
+                    </p>
+                    <Link
+                      href={`/v/${event.event_code}`}
+                      target="_blank"
+                      className="text-white/25 hover:text-white/50 transition-colors"
+                      title="Open viewer in new tab"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                    </Link>
+                  </div>
+                  <div style={{ height: 300, background: "#fff", position: "relative" }}>
+                    <iframe
+                      src={`/v/${event.event_code}?lang=${targetLangs[0]}`}
+                      className="w-full h-full border-0"
+                      title="Viewer preview"
+                      style={{ display: "block" }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Translation feeds */}
               <div
